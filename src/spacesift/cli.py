@@ -305,6 +305,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     if not getattr(args, "command", None):
+        # 双击打包好的 exe 时没有参数：直接开界面，别让人看一屏控制台就没了
+        if getattr(sys, "frozen", False):
+            from .webui import serve
+
+            serve(os.path.abspath(os.sep))
+            return 0
+
         # 不带子命令：扫描当前盘 + 检测 + 打印摘要，绝不删除
         args.path = os.path.abspath(os.sep)
         args.depth, args.top, args.json, args.quiet = 3, 30, None, False

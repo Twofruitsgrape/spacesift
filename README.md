@@ -77,6 +77,9 @@ spacesift --version
 
 ## 图形界面（第一次用就走这里）
 
+**不想装 Python？** 直接双击 `SpaceSift.exe`（9 MB 单文件，自带运行时，不写注册表、
+不装服务）。或者命令行：
+
 ```bash
 spacesift ui
 ```

@@ -216,7 +216,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        self._write(body)
 
     def _html(self, text: str) -> None:
         body = text.encode("utf-8")
@@ -224,7 +224,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        self._write(body)
+
+    def _write(self, body: bytes) -> None:
+        """写响应。浏览器刷新/关页面会让连接中途消失，那不是错误。"""
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
 
     def _authorized(self, query: dict[str, list[str]]) -> bool:
         token = self.headers.get("X-Token") or (query.get("t", [""])[0])
