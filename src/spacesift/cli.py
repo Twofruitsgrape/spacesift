@@ -42,7 +42,15 @@ def _c(text: str, color: str) -> str:
 
 
 def _configure_stdout() -> None:
-    """Windows 控制台默认 GBK，中文/字符画会炸，这里强制 UTF-8。"""
+    """Windows 控制台默认 GBK，中文/字符画会炸，这里强制 UTF-8。
+
+    ``--windowed`` 打包的 exe 没有控制台，``sys.stdout`` 是 None，print 会直接抛错，
+    所以先兜一个空设备。
+    """
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -214,6 +222,14 @@ def cmd_clean(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_gui(args: argparse.Namespace) -> int:
+    """打开原生窗口界面。"""
+    from .gui import run
+
+    run(args.path, depth=args.depth)
+    return 0
+
+
 def cmd_ui(args: argparse.Namespace) -> int:
     """打开本地可视化界面（浏览器）。"""
     from .webui import serve
@@ -290,6 +306,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("--quiet", action="store_true")
     p_report.set_defaults(func=cmd_report)
 
+    p_gui = sub.add_parser("gui", help="打开原生窗口界面（默认）")
+    p_gui.add_argument("path", nargs="?", default="", help="扫描起点，默认为全部磁盘")
+    p_gui.add_argument("--depth", type=int, default=3, help="方块图保留的目录深度")
+    p_gui.set_defaults(func=cmd_gui)
+
     p_ui = sub.add_parser("ui", help="打开可视化界面（本地网页，零依赖）")
     p_ui.add_argument("path", nargs="?", default=os.path.abspath(os.sep), help="扫描起点")
     p_ui.add_argument("--port", type=int, default=0, help="端口，0 = 自动分配")
@@ -305,11 +326,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     if not getattr(args, "command", None):
-        # 双击打包好的 exe 时没有参数：直接开界面，别让人看一屏控制台就没了
+        # 双击打包好的 exe 时没有参数：直接开原生窗口，别让人看一屏控制台就没了
         if getattr(sys, "frozen", False):
-            from .webui import serve
+            from .gui import run
 
-            serve(os.path.abspath(os.sep))
+            run()
             return 0
 
         # 不带子命令：扫描当前盘 + 检测 + 打印摘要，绝不删除

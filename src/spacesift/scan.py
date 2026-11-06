@@ -103,6 +103,8 @@ def scan(
     skip_paths: Iterable[str] = (),
     progress: Callable[[int, str], None] | None = None,
     progress_every: int = 2000,
+    partial: Callable[[dict[str, int]], None] | None = None,
+    partial_every: int = 4000,
 ) -> ScanResult:
     """扫描 ``root`` 并返回聚合结果。
 
@@ -120,6 +122,9 @@ def scan(
         按绝对路径前缀跳过。
     progress:
         回调 ``(已访问目录数, 当前目录)``，用于 CLI 进度显示。
+    partial:
+        扫描过程中的增量快照回调，参数是 ``{一级子目录: 已扫到的字节数}``。
+        界面用它把方块边扫边画出来（SpaceSniffer 那种生长感），数值只会变大。
     """
     root = os.path.abspath(root)
     started = time.perf_counter()
@@ -132,6 +137,27 @@ def scan(
     depth: dict[str, int] = {root: 0}
     biggest: list[tuple[int, int, str]] = []
 
+    # 增量累计到「一级子目录」，给 partial 回调用，避免每次重新聚合全树。
+    top_totals: dict[str, int] = {}
+    top_cache: dict[str, str] = {}
+
+    def _top_of(path: str) -> str:
+        cached = top_cache.get(path)
+        if cached is not None:
+            return cached
+        node = path
+        seen: list[str] = []
+        while depth.get(node, 0) > 1:
+            up = parent.get(node)
+            if up is None:
+                break
+            seen.append(node)
+            node = up
+        for item in seen:
+            top_cache[item] = node
+        top_cache[path] = node
+        return node
+
     total_files = 0
     errors = 0
     visited = 0
@@ -142,6 +168,8 @@ def scan(
         visited += 1
         if progress is not None and visited % progress_every == 0:
             progress(visited, current)
+        if partial is not None and visited % partial_every == 0:
+            partial(dict(top_totals))
 
         try:
             iterator = os.scandir(current)
@@ -177,6 +205,9 @@ def scan(
                         direct[current] = direct.get(current, 0) + size
                         total_files += 1
                         _push_biggest(biggest, entry.path, size, top_files)
+                        if partial is not None and depth[current] >= 1:
+                            key = _top_of(current)
+                            top_totals[key] = top_totals.get(key, 0) + size
                 except OSError:
                     errors += 1
 

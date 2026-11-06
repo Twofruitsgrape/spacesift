@@ -1,0 +1,307 @@
+"""原生窗口界面（pywebview + 系统 WebView2）。
+
+不是浏览器标签页：``create_window`` 打开的是一个真正的窗口，Windows 上由 Edge
+WebView2 控件渲染界面 —— 所以既能用 HTML 画出方块图，又不用背 Electron 那一百多兆。
+
+体积账：pywebview + WebView2 绑定打包后约 14 MB，界面素材 40 KB；对比 Electron
+起步 150 MB，而且不需要随包分发浏览器内核（系统自带）。
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import threading
+import time
+import traceback
+from dataclasses import dataclass, field
+from typing import Any
+
+import webview
+
+from .analyze import Opportunity, build_opportunities, totals_by_category
+from .clean import clean_findings
+from .report import disk_info
+from .rules import detect_all
+from .scan import ScanResult, human_size, scan
+
+_UI_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui.html")
+
+APP_NAME = "SpaceSift"
+
+
+def ui_html() -> str:
+    with open(_UI_PATH, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def list_drives() -> list[dict[str, Any]]:
+    """枚举可用的盘符，带占用和剩余空间。"""
+    rows: list[dict[str, Any]] = []
+    for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+        root = f"{letter}:\\"
+        if not os.path.exists(root):
+            continue
+        try:
+            usage = shutil.disk_usage(root)
+        except OSError:
+            continue
+        percent = (usage.used / usage.total * 100) if usage.total else 0
+        rows.append({
+            "path": root,
+            "total": usage.total,
+            "used": usage.used,
+            "free": usage.free,
+            "percent": round(percent, 1),
+            "used_text": human_size(usage.used),
+            "total_text": human_size(usage.total),
+            "free_text": human_size(usage.free),
+        })
+    return rows
+
+
+@dataclass
+class GuiState:
+    """界面状态。后端线程写、前端轮询读，全程加锁。"""
+
+    root: str = ""
+    depth: int = 3
+    status: str = "idle"          # idle | scanning | done | error
+    visited: int = 0
+    current: str = ""
+    error: str = ""
+
+    result: ScanResult | None = None
+    findings: list = field(default_factory=list)
+    opportunities: list[Opportunity] = field(default_factory=list)
+    partial: dict[str, int] = field(default_factory=dict)
+
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _thread: threading.Thread | None = field(default=None, repr=False)
+
+    # ---------------------------------------------------------------- 扫描
+
+    def start_scan(self, path: str | None, depth: int | None = None) -> None:
+        target = os.path.abspath(path) if path else (self.root or os.path.abspath(os.sep))
+        if not os.path.isdir(target):
+            with self._lock:
+                self.status = "error"
+                self.error = f"目录不存在：{target}"
+            return
+
+        with self._lock:
+            if self.status == "scanning":
+                return
+            self.root = target
+            if depth:
+                self.depth = depth
+            self.status = "scanning"
+            self.visited = 0
+            self.current = ""
+            self.error = ""
+            self.partial = {}
+            self.result = None
+
+        self._thread = threading.Thread(target=self._worker, name="spacesift-scan", daemon=True)
+        self._thread.start()
+
+    def _worker(self) -> None:
+        try:
+            def on_progress(visited: int, current: str) -> None:
+                with self._lock:
+                    self.visited = visited
+                    self.current = current
+
+            def on_partial(snapshot: dict[str, int]) -> None:
+                with self._lock:
+                    self.partial = snapshot
+
+            result = scan(
+                self.root,
+                max_depth=self.depth,
+                top_files=80,
+                progress=on_progress,
+                partial=on_partial,
+            )
+            findings = detect_all()
+            opportunities = build_opportunities(result, findings)
+            with self._lock:
+                self.result = result
+                self.findings = findings
+                self.opportunities = opportunities
+                self.status = "done"
+        except Exception as exc:  # noqa: BLE001 - 界面要显示原因
+            with self._lock:
+                self.status = "error"
+                self.error = f"{exc}\n{traceback.format_exc(limit=2)}"
+
+    # ---------------------------------------------------------------- 快照
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            payload: dict[str, Any] = {
+                "status": self.status,
+                "visited": self.visited,
+                "current": self.current,
+                "error": self.error,
+                "root": self.root,
+                "depth": self.depth,
+                "partial": self.partial,
+            }
+            result = self.result
+            if result is not None:
+                try:
+                    info = disk_info(self.root)
+                    payload["disk"] = {
+                        "total": info.total, "used": info.used, "free": info.free,
+                        "percent": round(info.percent_used, 1),
+                        "total_text": human_size(info.total),
+                        "used_text": human_size(info.used),
+                        "free_text": human_size(info.free),
+                    }
+                except OSError:
+                    payload["disk"] = None
+
+                payload["scan"] = {
+                    "total": result.total_bytes,
+                    "total_text": human_size(result.total_bytes),
+                    "files": result.total_files,
+                    "dirs": len(result.dirs),
+                    "errors": result.errors,
+                    "elapsed": round(result.elapsed, 1),
+                    "tree": result.dirs,
+                    "top_files": [
+                        {"path": hit.path, "size": hit.size, "text": human_size(hit.size)}
+                        for hit in result.top_files[:20]
+                    ],
+                }
+                payload["opportunities"] = [
+                    {
+                        "id": row.id, "title": row.title, "category": row.category,
+                        "category_label": row.category_label, "size": row.size,
+                        "size_text": row.size_text, "reason": row.reason,
+                        "action": row.action, "paths": row.paths[:12],
+                    }
+                    for row in self.opportunities
+                ]
+                payload["totals"] = {
+                    key: {"bytes": value, "text": human_size(value)}
+                    for key, value in totals_by_category(self.opportunities).items()
+                }
+            return payload
+
+    # ---------------------------------------------------------------- 清理
+
+    def clean(self, ids: list[str], dry_run: bool) -> dict[str, Any]:
+        with self._lock:
+            known = {row.id: row for row in self.opportunities}
+            findings = {f.rule.id: f for f in self.findings}
+
+        selected = [known[i] for i in ids if i in known]
+        targets = [findings[o.id] for o in selected if o.id in findings]
+        if not targets:
+            return {"ok": False, "message": "没有可执行的项目", "reports": []}
+
+        reports = clean_findings(targets, dry_run=dry_run, include_caution=True)
+        total = sum(r.freed_bytes for r in reports)
+        return {
+            "ok": True,
+            "dry_run": dry_run,
+            "freed": total,
+            "freed_text": human_size(total),
+            "reports": [
+                {
+                    "id": r.rule_id, "name": r.rule_name, "freed": r.freed_bytes,
+                    "freed_text": human_size(r.freed_bytes), "files": r.deleted_files,
+                    "errors": r.errors[:5],
+                }
+                for r in reports
+            ],
+            "message": ("演练完成，没有删除任何文件" if dry_run else f"已释放 {human_size(total)}"),
+        }
+
+
+class Api:
+    """暴露给前端的接口（``window.pywebview.api.xxx()``）。"""
+
+    def __init__(self) -> None:
+        self.state = GuiState()
+        self._window: Any = None
+
+    # -- 窗口 --------------------------------------------------------
+
+    def attach(self, window: Any) -> None:
+        self._window = window
+
+    # -- 路径选择 ----------------------------------------------------
+
+    def list_drives(self) -> list[dict[str, Any]]:
+        return list_drives()
+
+    def pick_folder(self) -> str:
+        """弹原生「选择文件夹」对话框，取消时返回空串。"""
+        if self._window is None:
+            return ""
+        try:
+            picked = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        except Exception:  # noqa: BLE001 - 对话框失败不该崩界面
+            return ""
+        if not picked:
+            return ""
+        return picked[0] if isinstance(picked, (list, tuple)) else str(picked)
+
+    def reveal(self, path: str) -> bool:
+        """在资源管理器中打开某个目录。"""
+        try:
+            if os.path.isdir(path):
+                os.startfile(path)  # type: ignore[attr-defined]
+                return True
+        except OSError:
+            return False
+        return False
+
+    # -- 扫描 --------------------------------------------------------
+
+    def start_scan(self, path: str = "", depth: int = 0) -> dict[str, Any]:
+        self.state.start_scan(path or None, depth or None)
+        return {"ok": True}
+
+    def get_state(self) -> dict[str, Any]:
+        return self.state.snapshot()
+
+    def clean(self, ids: list[str], dry_run: bool = True) -> dict[str, Any]:
+        return self.state.clean([str(i) for i in (ids or [])], bool(dry_run))
+
+
+def default_root() -> str:
+    """双击启动时的默认扫描位置：系统盘，而不是 exe 所在的盘。
+
+    ``os.path.abspath(os.sep)`` 取的是「当前工作目录所在的盘」——双击 exe 时那就是
+    exe 自己所在的盘（可能是个 U 盘），扫出来的结果毫无意义。
+    """
+    system_drive = os.environ.get("SystemDrive") or "C:"
+    root = system_drive.rstrip("\\/") + "\\"
+    return root if os.path.isdir(root) else os.path.abspath(os.sep)
+
+
+def run(path: str = "", *, depth: int = 3, width: int = 1280, height: int = 820) -> None:
+    """打开窗口，阻塞到窗口关闭。"""
+    api = Api()
+    api.state.depth = depth
+    api.state.root = os.path.abspath(path) if path else default_root()
+
+    window = webview.create_window(
+        APP_NAME,
+        html=ui_html(),
+        js_api=api,
+        width=width,
+        height=height,
+        min_size=(960, 620),
+        background_color="#0d1017",
+        text_select=False,
+    )
+    api.attach(window)
+    api.state.start_scan(api.state.root)
+
+    webview.start(debug=False)
