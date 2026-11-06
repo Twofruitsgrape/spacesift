@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SpaceSift · 磁盘空间</title>
+<style>
+:root{
+  --bg:#0d1017; --panel:#151922; --panel2:#1b2030; --fg:#e8ebf2; --muted:#8b93a7;
+  --line:#242b39; --safe:#3fb950; --warn:#d29922; --danger:#f85149; --blue:#58a6ff;
+  --accent:#7ee787;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+  height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+/* ---------- 顶栏 ---------- */
+header{display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--line);
+  background:var(--panel);flex-wrap:wrap}
+.logo{font-weight:700;font-size:15px;letter-spacing:.02em}
+.logo span{color:var(--accent)}
+.pathbox{display:flex;gap:6px;flex:1;min-width:280px}
+input[type=text]{flex:1;background:var(--bg);border:1px solid var(--line);color:var(--fg);
+  border-radius:7px;padding:7px 10px;font:13px ui-monospace,Consolas,monospace;outline:none}
+input[type=text]:focus{border-color:var(--blue)}
+button{background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:7px;
+  padding:7px 13px;cursor:pointer;font-size:13px;transition:.15s}
+button:hover{background:#232939}
+button.primary{background:#1f6feb;border-color:#1f6feb;color:#fff}
+button.primary:hover{background:#2f7ff5}
+button.ghost{background:transparent}
+button:disabled{opacity:.45;cursor:not-allowed}
+
+.diskbar{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--muted);min-width:280px}
+.diskbar .track{flex:1;height:8px;background:#0a0d12;border-radius:5px;overflow:hidden;min-width:120px}
+.diskbar .fill{height:100%;background:linear-gradient(90deg,#2f81f7,var(--accent));transition:width .4s}
+.diskbar.warn .fill{background:linear-gradient(90deg,#d29922,#f0883e)}
+.diskbar.danger .fill{background:linear-gradient(90deg,#f85149,#ff7b72)}
+
+/* ---------- 主体 ---------- */
+main{flex:1;display:flex;min-height:0}
+#left{flex:1.35;display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--line)}
+#right{flex:1;display:flex;flex-direction:column;min-width:340px;max-width:560px}
+
+.bread{display:flex;align-items:center;gap:6px;padding:9px 16px;font-size:12.5px;color:var(--muted);
+  border-bottom:1px solid var(--line);overflow-x:auto;white-space:nowrap}
+.bread b{color:var(--fg);font-weight:600}
+.crumb{cursor:pointer;padding:2px 6px;border-radius:5px}
+.crumb:hover{background:var(--panel2);color:var(--fg)}
+
+#map{flex:1;position:relative;padding:10px;min-height:0}
+#mapInner{position:relative;width:100%;height:100%;border-radius:9px;overflow:hidden;background:#0a0d12}
+.tile{position:absolute;border-radius:3px;overflow:hidden;cursor:pointer;
+  border:1px solid rgba(0,0,0,.35);transition:filter .12s}
+.tile:hover{filter:brightness(1.22);outline:2px solid #fff;outline-offset:-2px;z-index:5}
+.tile .tname{position:absolute;top:5px;left:7px;right:7px;font-size:12px;font-weight:600;
+  color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.85);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;pointer-events:none}
+.tile .tsize{position:absolute;bottom:5px;left:7px;font-size:11px;color:rgba(255,255,255,.85);
+  text-shadow:0 1px 3px rgba(0,0,0,.85);pointer-events:none}
+
+/* ---------- 右侧清单 ---------- */
+.panelhead{padding:11px 16px;border-bottom:1px solid var(--line);display:flex;
+  align-items:center;justify-content:space-between;gap:10px;background:var(--panel)}
+.panelhead h2{font-size:13.5px;font-weight:600}
+#list{flex:1;overflow-y:auto;padding:6px 0 16px}
+.group{margin:4px 0 12px;border-left:2px solid var(--line);margin-left:16px;padding-left:2px}
+.group>h3{display:flex;align-items:center;gap:8px;padding:7px 12px;font-size:12px;
+  color:var(--muted);text-transform:uppercase;letter-spacing:.05em;position:sticky;top:0;
+  background:var(--bg);z-index:2;border-bottom:1px solid var(--line)}
+.group>h3 .dot{width:7px;height:7px;border-radius:50%}
+.dot.junk{background:var(--safe)} .dot.review{background:var(--warn)}
+.dot.archive{background:var(--blue)} .dot.manual{background:var(--danger)}
+.row{display:flex;gap:10px;padding:9px 16px;border-bottom:1px solid rgba(36,43,57,.55);
+  align-items:flex-start;cursor:pointer}
+.row:hover{background:var(--panel)}
+.row.disabled{cursor:default;opacity:.72}
+.row.disabled:hover{background:transparent}
+.row input{margin-top:3px;width:15px;height:15px;accent-color:#1f6feb;cursor:pointer;flex:none}
+.row .body{flex:1;min-width:0}
+.row .name{font-size:13.5px;font-weight:500;display:flex;justify-content:space-between;gap:10px}
+.row .size{color:var(--accent);font:12.5px ui-monospace,Consolas,monospace;white-space:nowrap}
+.row .why{color:var(--muted);font-size:12px;margin-top:2px;line-height:1.45}
+.row .act{color:#6e7681;font-size:11.5px;margin-top:3px;font-family:ui-monospace,Consolas,monospace;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ---------- 底栏（作为 #right 的 flex 子项，不再绝对定位，避免盖住列表） ---------- */
+footer{padding:12px 16px;background:var(--panel);border-top:1px solid var(--line);
+  display:flex;align-items:center;gap:10px;flex:none}
+footer .sum{flex:1;font-size:12.5px;color:var(--muted)}
+footer .sum b{color:var(--accent);font-size:15px;font-family:ui-monospace,Consolas,monospace}
+
+/* ---------- 状态层 ---------- */
+#overlay{position:fixed;inset:0;background:rgba(6,8,12,.86);display:none;
+  align-items:center;justify-content:center;z-index:50;backdrop-filter:blur(3px)}
+#overlay.on{display:flex}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:26px 30px;
+  max-width:520px;width:92%}
+.card h3{font-size:16px;margin-bottom:12px}
+.card p{color:var(--muted);font-size:13px;margin-bottom:10px;line-height:1.6}
+.card ul{list-style:none;max-height:230px;overflow:auto;margin:12px 0;font-size:13px}
+.card li{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)}
+.card li span:last-child{color:var(--accent);font-family:ui-monospace,Consolas,monospace}
+.card .actions{display:flex;justify-content:flex-end;gap:9px;margin-top:18px}
+.spinner{width:38px;height:38px;border:3px solid var(--line);border-top-color:var(--accent);
+  border-radius:50%;animation:spin .9s linear infinite;margin:0 auto 16px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.center{text-align:center}
+.scanning{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  flex-direction:column;background:rgba(10,13,18,.72);z-index:8}
+.scanning p{color:var(--muted);font-size:13px;margin-top:14px}
+.mono{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:#6e7681;
+  max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.toast{position:fixed;top:58px;right:22px;background:var(--panel2);
+  border:1px solid var(--line);padding:11px 18px;border-radius:9px;font-size:13px;z-index:60;
+  opacity:0;transform:translateY(-8px);transition:.25s;pointer-events:none;max-width:420px;
+  box-shadow:0 8px 24px rgba(0,0,0,.45)}
+.toast.on{opacity:1;transform:translateY(0)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Space<span>Sift</span></div>
+  <div class="pathbox">
+    <input id="path" type="text" spellcheck="false" placeholder="C:\ 或 C:\Users\me">
+    <button id="rescan">扫描</button>
+  </div>
+  <div class="diskbar" id="diskbar">
+    <div class="track"><div class="fill" id="fill" style="width:0%"></div></div>
+    <span id="disktext">读取中…</span>
+  </div>
+</header>
+
+<main>
+  <section id="left">
+    <div class="bread" id="bread"></div>
+    <div id="map">
+      <div id="mapInner"></div>
+      <div class="scanning" id="scanning" style="display:none">
+        <div class="spinner"></div>
+        <p id="scanmsg">正在扫描…</p>
+        <div class="mono" id="scancur"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="right">
+    <div class="panelhead">
+      <h2>推荐清理项</h2>
+      <div style="display:flex;gap:8px">
+        <button class="ghost" id="selSafe" title="全选可直接清理的项">全选安全项</button>
+        <button class="ghost" id="selNone">取消全选</button>
+      </div>
+    </div>
+    <div id="list"></div>
+    <footer>
+      <div class="sum">已选 <b id="sum">0 B</b> · <span id="cnt">0 项</span></div>
+      <button id="dry">演练</button>
+      <button class="primary" id="run">清理选中项</button>
+    </footer>
+  </section>
+</main>
+
+<div id="overlay"><div class="card" id="card"></div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const TOKEN = new URLSearchParams(location.search).get('t') || '';
+const $ = id => document.getElementById(id);
+const fmt = n => {
+  if (!n) return '0 B';
+  const u = ['B','KB','MB','GB','TB']; let i = 0, v = n;
+  while (v >= 1024 && i < u.length-1) { v /= 1024; i++; }
+  return (i === 0 ? Math.round(v) : v.toFixed(1)) + ' ' + u[i];
+};
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+let STATE = null;
+let CURRENT = null;      // 当前下钻的目录
+let SELECTED = new Set();
+
+/* ---------------- squarify：与 Python 版同算法 ---------------- */
+function worstRatio(row, len) {
+  const s = row.reduce((a,b)=>a+b,0);
+  if (!s || !len) return Infinity;
+  const mx = Math.max(...row), mn = Math.min(...row);
+  if (mn <= 0) return Infinity;
+  return Math.max((len*len*mx)/(s*s), (s*s)/(len*len*mn));
+}
+function layoutRow(row, keys, x, y, w, h, out) {
+  const s = row.reduce((a,b)=>a+b,0); if (!s) return;
+  let off = 0;
+  if (w >= h) {
+    for (let i=0;i<row.length;i++){ const cw = w*row[i]/s; out.push({key:keys[i],x:x+off,y,w:cw,h}); off+=cw; }
+  } else {
+    for (let i=0;i<row.length;i++){ const ch = h*row[i]/s; out.push({key:keys[i],x,y:y+off,w,h:ch}); off+=ch; }
+  }
+}
+function squarify(areas, keys, x, y, w, h, out) {
+  if (!areas.length) return;
+  if (areas.length === 1) { out.push({key:keys[0],x,y,w,h}); return; }
+  const short = Math.min(w,h);
+  const row = [], rowKeys = [];
+  let i = 0;
+  while (i < areas.length) {
+    const cand = row.concat([areas[i]]);
+    if (!row.length || worstRatio(cand, short) <= worstRatio(row, short)) {
+      row.push(areas[i]); rowKeys.push(keys[i]); i++;
+    } else break;
+  }
+  if (i >= areas.length) { layoutRow(row, rowKeys, x, y, w, h, out); return; }
+  const rest = areas.slice(i), restKeys = keys.slice(i);
+  const share = row.reduce((a,b)=>a+b,0) / (row.concat(rest).reduce((a,b)=>a+b,0));
+  if (w >= h) {
+    const rw = w*share;
+    layoutRow(row, rowKeys, x, y, rw, h, out);
+    squarify(rest, restKeys, x+rw, y, w-rw, h, out);
+  } else {
+    const rh = h*share;
+    layoutRow(row, rowKeys, x, y, w, rh, out);
+    squarify(rest, restKeys, x, y+rh, w, h-rh, out);
+  }
+}
+
+/* ---------------- 颜色：按目录名做稳定着色 ---------------- */
+const PALETTE = ['#1f6feb','#238636','#9e6a03','#a52a2a','#6e40c9','#0d6b6b','#8b3a62','#4b5563','#1c7ed6','#5f3dc4'];
+function colorFor(name) {
+  let h = 0;
+  for (let i=0;i<name.length;i++) h = (h*31 + name.charCodeAt(i)) >>> 0;
+  return PALETTE[h % PALETTE.length];
+}
+
+/* ---------------- 数据 ---------------- */
+// Windows 的扫描结果是反斜杠路径，而前端传入的根可能是 / 形式。
+// 统一按正斜杠比较，避免出现「C:\ 一个方块都没有」这种尴尬。
+const normPath = p => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '');
+
+function childrenOf(tree, dir) {
+  const base = normPath(dir);
+  const prefix = base + '/';
+  const lowerPrefix = prefix.toLowerCase();
+  const rows = [];
+  for (const [p, size] of Object.entries(tree || {})) {
+    const np = normPath(p);
+    if (!np.toLowerCase().startsWith(lowerPrefix)) continue;
+    const rest = np.slice(prefix.length);
+    if (!rest || rest.includes('/')) continue;
+    rows.push({ path: p, name: rest, size });
+  }
+  rows.sort((a,b)=>b.size-a.size);
+  return rows;
+}
+
+// 一个目录下如果只有一个子项，直接钻进去，避免满屏只有一个方块。
+function drillToMeaningful(tree, dir) {
+  let cur = dir;
+  for (let i = 0; i < 6; i++) {
+    const kids = childrenOf(tree, cur);
+    if (kids.length !== 1) break;
+    cur = kids[0].path;
+  }
+  return cur;
+}
+
+function renderMap() {
+  const inner = $('mapInner');
+  const tree = STATE?.scan?.tree;
+  if (!tree || !CURRENT) { inner.innerHTML = ''; return; }
+
+  const kids = childrenOf(tree, CURRENT);
+  const box = inner.getBoundingClientRect();
+  const W = Math.max(box.width - 0, 1), H = Math.max(box.height - 0, 1);
+  inner.innerHTML = '';
+
+  if (!kids.length) {
+    inner.innerHTML = '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#6b7280;font-size:13px">这个目录下没有可细分的子目录</div>';
+    return;
+  }
+
+  const total = kids.reduce((a,k)=>a+k.size,0);
+  const scale = (W*H)/total;
+  const areas = kids.map(k=>k.size*scale);
+  const keys = kids.map(k=>k.path);
+  const out = [];
+  squarify(areas, keys, 0, 0, W, H, out);
+
+  const byPath = Object.fromEntries(kids.map(k=>[k.path,k]));
+  for (const t of out) {
+    const info = byPath[t.key];
+    if (!info) continue;
+    const d = document.createElement('div');
+    d.className = 'tile';
+    d.style.cssText = `left:${t.x}px;top:${t.y}px;width:${t.w}px;height:${t.h}px;background:${colorFor(info.name)}`;
+    if (t.w > 64 && t.h > 26) {
+      d.innerHTML = `<div class="tname">${esc(info.name)}</div><div class="tsize">${fmt(info.size)}</div>`;
+    }
+    d.title = `${info.path}\n${fmt(info.size)}`;
+    d.onclick = () => { CURRENT = info.path; renderMap(); renderBread(); };
+    inner.appendChild(d);
+  }
+}
+
+function renderBread() {
+  if (!CURRENT) return;
+  const root = STATE?.root || 'C:\\';
+  const parts = CURRENT.split(/[\\/]/).filter(Boolean);
+  const isWin = /^[A-Za-z]:$/.test(parts[0] || '');
+  let acc = isWin ? parts[0] + '\\' : '/';
+  let html = '<span class="crumb" data-p="' + esc(acc) + '">' + esc(root) + '</span>';
+  for (let i = isWin ? 1 : 0; i < parts.length; i++) {
+    acc = acc.endsWith('\\') || acc.endsWith('/') ? acc + parts[i] : acc + (isWin?'\\':'/') + parts[i];
+    html += ' <span style="opacity:.4">›</span> <span class="crumb" data-p="' + esc(acc) + '">' + esc(parts[i]) + '</span>';
+  }
+  const b = $('bread'); b.innerHTML = html;
+  b.querySelectorAll('.crumb').forEach(el => el.onclick = () => {
+    CURRENT = el.dataset.p; renderMap(); renderBread();
+  });
+}
+
+const CAT_ORDER = ['junk','review','archive','manual'];
+const CAT_LABEL = {junk:'可直接清理', review:'确认后清理', archive:'建议归档到其它盘', manual:'只能人工处理'};
+const CAT_HELP = {
+  junk:'删了系统或程序会自动重建，不丢数据。',
+  review:'有副作用（要重新下载、丢回滚点），先看一眼再决定。',
+  archive:'不是垃圾，是放错盘的大文件。工具不会删，建议手动搬走。',
+  manual:'系统功能或你的个人文件，工具永远不动。'
+};
+
+function renderList() {
+  const rows = STATE?.opportunities || [];
+  const list = $('list');
+  if (!rows.length) { list.innerHTML = '<div style="padding:20px 16px;color:var(--muted);font-size:13px">扫描完成后这里会出现推荐项。</div>'; return; }
+
+  const groups = {};
+  for (const r of rows) (groups[r.category] ||= []).push(r);
+
+  let html = '';
+  for (const cat of CAT_ORDER) {
+    const items = groups[cat]; if (!items || !items.length) continue;
+    const total = items.reduce((a,i)=>a+i.size,0);
+    html += `<div class="group"><h3><span class="dot ${cat}"></span>${CAT_LABEL[cat]} · ${fmt(total)}</h3>`;
+    html += `<div style="padding:0 16px 8px;color:#6e7681;font-size:11.5px">${CAT_HELP[cat]}</div>`;
+    for (const it of items) {
+      const selectable = cat === 'junk' || cat === 'review';
+      const checked = SELECTED.has(it.id);
+      html += `<label class="row ${selectable?'':'disabled'}">
+        <input type="checkbox" data-id="${esc(it.id)}" ${selectable?'':'disabled'} ${checked?'checked':''}>
+        <div class="body">
+          <div class="name"><span>${esc(it.title)}</span><span class="size">${esc(it.size_text)}</span></div>
+          <div class="why">${esc(it.reason)}</div>
+        </div></label>`;
+    }
+    html += '</div>';
+  }
+  list.innerHTML = html;
+
+  list.querySelectorAll('input[data-id]').forEach(cb => {
+    cb.onchange = () => {
+      const id = cb.dataset.id;
+      cb.checked ? SELECTED.add(id) : SELECTED.delete(id);
+      updateSum();
+    };
+  });
+}
+
+function updateSum() {
+  const rows = STATE?.opportunities || [];
+  let bytes = 0, n = 0;
+  for (const r of rows) if (SELECTED.has(r.id)) { bytes += r.size; n++; }
+  $('sum').textContent = fmt(bytes);
+  $('cnt').textContent = n + ' 项';
+  $('run').disabled = n === 0;
+  $('dry').disabled = n === 0;
+}
+
+function renderDisk() {
+  const d = STATE?.disk;
+  const bar = $('diskbar');
+  if (!d) { $('disktext').textContent = '—'; return; }
+  $('fill').style.width = Math.min(100, d.percent) + '%';
+  bar.className = 'diskbar' + (d.percent > 90 ? ' danger' : d.percent > 80 ? ' warn' : '');
+  $('disktext').textContent = `${d.used_text} / ${d.total_text} · 剩 ${d.free_text}`;
+}
+
+/* ---------------- 轮询 ---------------- */
+let pollTimer = null;
+
+async function poll() {
+  try {
+    const r = await fetch('/api/state', { headers: { 'X-Token': TOKEN } });
+    if (r.status === 403) { $('scanmsg').textContent = '会话已失效，请重新启动工具'; return; }
+    STATE = await r.json();
+  } catch (e) { return; }
+
+  renderDisk();
+
+  const scanning = STATE.status === 'scanning';
+  $('scanning').style.display = scanning ? 'flex' : 'none';
+  if (scanning) {
+    $('scanmsg').textContent = `正在扫描 · ${STATE.visited.toLocaleString()} 个目录`;
+    $('scancur').textContent = STATE.current || '';
+  }
+
+  if (STATE.status === 'error') {
+    $('scanmsg').textContent = '扫描失败';
+    $('scancur').textContent = (STATE.error || '').split('\n')[0];
+  }
+
+  if (STATE.status === 'done') {
+    if (!CURRENT) CURRENT = drillToMeaningful(STATE.scan?.tree, STATE.root);
+    if (STATE.scan) {
+      $('path').value = STATE.root;
+      renderMap(); renderBread();
+    }
+    renderList();
+    updateSum();
+    const s = STATE.scan;
+    if (s && !window.__scanned) {
+      window.__scanned = true;
+      toast(`扫描完成 · ${s.total_text} · ${s.files.toLocaleString()} 个文件 · ${s.elapsed}s`);
+    }
+  }
+
+  pollTimer = setTimeout(poll, scanning ? 500 : 1500);
+}
+
+function toast(msg, ms) {
+  const t = $('toast'); t.textContent = msg; t.classList.add('on');
+  clearTimeout(t._h); t._h = setTimeout(()=>t.classList.remove('on'), ms || 3200);
+}
+
+/* ---------------- 清理 ---------------- */
+function selectedRows() {
+  return (STATE?.opportunities || []).filter(r => SELECTED.has(r.id));
+}
+
+async function doClean(dryRun) {
+  const rows = selectedRows();
+  if (!rows.length) return;
+
+  if (!dryRun) {
+    const total = rows.reduce((a,r)=>a+r.size,0);
+    const html = `<h3>确认清理 ${rows.length} 项？</h3>
+      <p>预计释放 <b style="color:var(--accent)">${fmt(total)}</b>。以下内容将被删除：</p>
+      <ul>${rows.map(r=>`<li><span>${esc(r.title)}</span><span>${esc(r.size_text)}</span></li>`).join('')}</ul>
+      <p style="color:#8b93a7">这些位置都在白名单里，删了会自动重建；受保护路径一律拒绝。</p>
+      <div class="actions"><button class="ghost" id="cx">取消</button>
+      <button class="primary" id="ok">确认清理</button></div>`;
+    $('card').innerHTML = html;
+    $('overlay').classList.add('on');
+    $('cx').onclick = () => $('overlay').classList.remove('on');
+    $('ok').onclick = () => { $('overlay').classList.remove('on'); runClean(false); };
+    return;
+  }
+  runClean(true);
+}
+
+async function runClean(dryRun) {
+  const ids = selectedRows().map(r => r.id);
+  $('run').disabled = true; $('dry').disabled = true;
+  // 演练要遍历上万个文件，可能十几秒；不给反馈用户会以为点空了
+  toast(dryRun ? '正在统计（dry-run，不会删除）…' : '正在清理…', 60000);
+  try {
+    const r = await fetch('/api/clean', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Token': TOKEN },
+      body: JSON.stringify({ ids, dry_run: dryRun })
+    });
+    const data = await r.json();
+    if (!data.ok) { toast(data.message || '没有可执行项'); return; }
+
+    if (dryRun) {
+      toast(`演练：可释放 ${data.freed_text}（未删除任何文件）`);
+    } else {
+      toast(`已释放 ${data.freed_text}`);
+      const errs = (data.reports||[]).flatMap(x=>x.errors||[]);
+      if (errs.length) {
+        $('card').innerHTML = `<h3>清理完成，有 ${errs.length} 项被跳过</h3>
+          <ul>${errs.slice(0,12).map(e=>`<li><span style="font-size:12px">${esc(e)}</span></li>`).join('')}</ul>
+          <p>通常是文件正被程序占用，或有权限限制（管理员权限项需以管理员身份运行）。</p>
+          <div class="actions"><button class="primary" id="cx">知道了</button></div>`;
+        $('overlay').classList.add('on');
+        $('cx').onclick = () => $('overlay').classList.remove('on');
+      }
+      SELECTED.clear();
+      scanNow(STATE.root);   // 重新扫描，让清单反映真实状态
+    }
+  } catch (e) {
+    toast('清理请求失败：' + e.message);
+  } finally {
+    $('run').disabled = false; $('dry').disabled = false;
+    updateSum();
+  }
+}
+
+/* ---------------- 扫描控制 ---------------- */
+async function scanNow(path, depth) {
+  window.__scanned = false;
+  CURRENT = null;
+  await fetch('/api/scan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Token': TOKEN },
+    body: JSON.stringify({ path, depth })
+  });
+}
+
+$('rescan').onclick = () => {
+  const p = $('path').value.trim();
+  if (!p) return;
+  SELECTED.clear();
+  scanNow(p, 3);
+};
+$('path').onkeydown = e => { if (e.key === 'Enter') $('rescan').click(); };
+$('selSafe').onclick = () => {
+  for (const r of STATE?.opportunities || []) if (r.category === 'junk' || r.category === 'review') SELECTED.add(r.id);
+  renderList(); updateSum();
+};
+$('selNone').onclick = () => { SELECTED.clear(); renderList(); updateSum(); };
+$('dry').onclick = () => doClean(true);
+$('run').onclick = () => doClean(false);
+window.addEventListener('resize', () => renderMap());
+
+poll();
+</script>
+</body>
+</html>

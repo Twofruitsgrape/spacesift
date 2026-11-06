@@ -1,6 +1,6 @@
 # 磁盘空间分析报告
 
-- 生成时间：2026-11-06 03:49
+- 生成时间：2026-11-06 04:47
 - 扫描路径：`C:\`
 - 扫描规模：623.6 GB / 3,213,809 个文件 / 513,892 个目录
 - 扫描耗时：43.7 秒（862 个目录因权限或占用未能读取）
@@ -10,13 +10,13 @@
 | 指标 | 数值 |
 |---|---|
 | 卷容量 | 953.2 GB |
-| 已用 | 654.5 GB |
-| 剩余 | 298.6 GB |
-| 使用率 | 68.7% |
+| 已用 | 526.3 GB |
+| 剩余 | 426.9 GB |
+| 使用率 | 55.2% |
 
-`[█████████████████████░░░░░░░░░]` 68.7%
+`[█████████████████░░░░░░░░░░░░░]` 55.2%
 
-> **只清垃圾**：可回收约 **36.7 GB**，清理后剩余 335.3 GB（35.2% 可用）
+> **只清垃圾**：可回收约 **36.5 GB**，清理后剩余 463.4 GB（48.6% 可用）
 >
 > **把大文件挪出 C 盘**：另有 **184.8 GB** 是可归档数据，这部分才是大头，但需要你决定放到哪个盘。
 
@@ -34,6 +34,8 @@
 | `mnt` | 439.0 MB | 0.1% | `░░░░░░░░░░░░` |
 | `tmp` | 112.9 MB | 0.0% | `░░░░░░░░░░░░` |
 | `E` | 30.7 MB | 0.0% | `░░░░░░░░░░░░` |
+| `refprop` | 12.1 MB | 0.0% | `░░░░░░░░░░░░` |
+| `down` | 10.1 MB | 0.0% | `░░░░░░░░░░░░` |
 
 ### 最大的文件
 
@@ -54,7 +56,7 @@
 
 ### 3.1 可直接清理
 
-删了系统或程序会自己重建，不丢数据。 **合计 22.5 GB**
+删了系统或程序会自己重建，不丢数据。 **合计 22.4 GB**
 
 | 项目 | 大小 | 为什么 | 怎么做 |
 |---|---|---|---|
@@ -63,10 +65,9 @@
 | uv 缓存 | 1.8 GB | uv 的包缓存，可用 `uv cache clean` 重建。 | spacesift clean --only uv-cache --yes |
 | Edge 缓存 | 1012.9 MB | 网页缓存，可安全清理。 | spacesift clean --only browser-cache-edge --yes |
 | pip 缓存 | 944.8 MB | 下载过的 wheel 包缓存，重装时会重新下载。 | spacesift clean --only pip-cache --yes |
-| Chrome 缓存 | 849.0 MB | 网页缓存，删除后首次访问会稍慢，不影响登录状态。 | spacesift clean --only browser-cache-chrome --yes |
-| 崩溃转储 | 207.6 MB | 程序崩溃时写下的转储文件，排查完就没用了。 | spacesift clean --only crash-dumps --yes |
+| Chrome 缓存 | 848.3 MB | 网页缓存，删除后首次访问会稍慢，不影响登录状态。 | spacesift clean --only browser-cache-chrome --yes |
 | Electron 应用缓存 | 151.2 MB | VS Code / Slack / Discord 等 Electron 应用的缓存与日志。 | spacesift clean --only electron-cache --yes |
-| 缩略图缓存 | 42.1 MB | 资源管理器的缩略图数据库，会自动重建。 | spacesift clean --only thumbnail-cache --yes |
+| 缩略图缓存 | 43.1 MB | 资源管理器的缩略图数据库，会自动重建。 | spacesift clean --only thumbnail-cache --yes |
 | Windows 错误报告 | 258.5 KB | 错误报告队列，可以安全清空。 | spacesift clean --only wer-reports --yes |
 | Windows 更新下载缓存 | 129.3 KB | 已安装更新的安装包缓存，删除后不会影响已装补丁。 | spacesift clean --only update-download --yes |
 
@@ -107,14 +108,14 @@
 
 ## 四、推荐执行顺序
 
-1. **第一步：清缓存与临时文件** —— 约 22.5 GB。全程自动，删了系统自己重建
-   - 累计可回收：22.5 GB
+1. **第一步：清缓存与临时文件** —— 约 22.4 GB。全程自动，删了系统自己重建
+   - 累计可回收：22.4 GB
 2. **第二步：确认后清** —— 约 14.1 GB。看一眼清单再决定，收益不如第一步稳定
-   - 累计可回收：36.7 GB
+   - 累计可回收：36.5 GB
 3. **第三步：把大文件挪出 C 盘** —— 约 184.8 GB。收益最大的一步，需要你自己选目标盘
-   - 累计可回收：221.5 GB
+   - 累计可回收：221.3 GB
 4. **第四步：系统级开关** —— 约 98.3 GB。休眠文件、页面文件、微信缓存等，需要手动操作
-   - 累计可回收：319.8 GB
+   - 累计可回收：319.7 GB
 
 工具直接执行的命令：
 
@@ -138,4 +139,4 @@ spacesift clean --yes --include-caution
 
 ---
 
-由 [SpaceSift](https://github.com/YOURNAME/spacesift) 生成。
+由 [SpaceSift](https://github.com/Twofruitsgrape/spacesift) 生成。

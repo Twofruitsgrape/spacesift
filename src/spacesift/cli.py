@@ -214,6 +214,19 @@ def cmd_clean(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ui(args: argparse.Namespace) -> int:
+    """打开本地可视化界面（浏览器）。"""
+    from .webui import serve
+
+    serve(
+        args.path,
+        port=args.port,
+        depth=args.depth,
+        open_browser=not args.no_browser,
+    )
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     if args.scan_json:
         result = _scan_result_from_json(args.scan_json)
@@ -276,6 +289,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("--top-dirs", type=int, default=12)
     p_report.add_argument("--quiet", action="store_true")
     p_report.set_defaults(func=cmd_report)
+
+    p_ui = sub.add_parser("ui", help="打开可视化界面（本地网页，零依赖）")
+    p_ui.add_argument("path", nargs="?", default=os.path.abspath(os.sep), help="扫描起点")
+    p_ui.add_argument("--port", type=int, default=0, help="端口，0 = 自动分配")
+    p_ui.add_argument("--depth", type=int, default=3, help="方块图保留的目录深度")
+    p_ui.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    p_ui.set_defaults(func=cmd_ui)
     return parser
 
 
