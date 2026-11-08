@@ -316,8 +316,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.set_defaults(func=cmd_report)
 
     p_gui = sub.add_parser("gui", help="打开原生窗口界面（默认）")
-    p_gui.add_argument("path", nargs="?", default="", help="扫描起点，默认为全部磁盘")
-    p_gui.add_argument("--depth", type=int, default=3, help="方块图保留的目录深度")
+    p_gui.add_argument("path", nargs="?", default="", help="扫描起点，默认为系统盘")
+    p_gui.add_argument("--depth", type=int, default=6,
+                       help="方块图保留的目录深度，决定能下钻几层")
     p_gui.set_defaults(func=cmd_gui)
 
     p_ui = sub.add_parser("ui", help="打开可视化界面（本地网页，零依赖）")

@@ -59,6 +59,8 @@ main{flex:1;display:flex;min-height:0}
              width .38s cubic-bezier(.22,.61,.36,1),height .38s cubic-bezier(.22,.61,.36,1),
              background .3s,opacity .3s}
 .tile.growing{opacity:.82;animation:breathe 1.8s ease-in-out infinite}
+.tile.file{cursor:default;border-color:rgba(255,255,255,.08)}
+.tile.file:hover{filter:brightness(1.18);outline:1px solid rgba(255,255,255,.45)}
 @keyframes breathe{0%,100%{filter:brightness(1)}50%{filter:brightness(1.28)}}
 .tile:hover{filter:brightness(1.22);outline:2px solid #fff;outline-offset:-2px;z-index:5}
 .tile .tname{position:absolute;top:5px;left:7px;right:7px;font-size:12px;font-weight:600;
@@ -215,6 +217,12 @@ const API = {
     if (isNative()) return window.pywebview.api.list_drives();
     return [];
   },
+  async get_children(path) {
+    if (isNative()) return window.pywebview.api.get_children(path);
+    // 浏览器模式：没有后端切片能力，退回本地浅层树（最多 3 层）
+    const tree = STATE?.scan?.tree || {};
+    return { dirs: childrenOf(tree, path), files: [] };
+  },
   async pick_folder() {
     if (isNative()) return window.pywebview.api.pick_folder();
     return '';
@@ -305,10 +313,12 @@ function childrenOf(tree, dir) {
 }
 
 // 一个目录下如果只有一个子项，直接钻进去，避免满屏只有一个方块。
-function drillToMeaningful(tree, dir) {
+async function drillToMeaningful(dir) {
   let cur = dir;
-  for (let i = 0; i < 6; i++) {
-    const kids = childrenOf(tree, cur);
+  for (let i = 0; i < 5; i++) {
+    let view;
+    try { view = await loadView(cur); } catch (e) { break; }
+    const kids = (view && view.dirs) || [];
     if (kids.length !== 1) break;
     cur = kids[0].path;
   }
@@ -332,17 +342,38 @@ function partialChildren(partial, root) {
   return rows;
 }
 
-function renderMap() {
+// 每层子项按需向后端要，缓存住。整棵树一次传给前端会撑爆 JSON，
+// 那样下钻到深层就成了「明明有子目录却显示文件」。
+const VIEW_CACHE = {};
+async function loadView(path) {
+  if (VIEW_CACHE[path]) return VIEW_CACHE[path];
+  let view = { dirs: [], files: [] };
+  try {
+    view = (await API.get_children(path)) || view;
+  } catch (e) {
+    view = { dirs: [], files: [] };
+  }
+  VIEW_CACHE[path] = view;
+  return view;
+}
+
+async function renderMap() {
   const inner = $('mapInner');
   const scanning = STATE?.status === 'scanning';
-  const tree = STATE?.scan?.tree;
 
   let kids;
   if (scanning) {
     kids = partialChildren(STATE.partial, STATE.root);
   } else {
-    if (!tree || !CURRENT) { inner.innerHTML = ''; return; }
-    kids = childrenOf(tree, CURRENT);
+    if (!CURRENT) { inner.innerHTML = ''; return; }
+    const view = await loadView(CURRENT);
+    kids = (view.dirs || []).map(d => ({ path: d.path, name: d.name, size: d.size }));
+    if (!kids.length) {
+      // 没有子目录了：列文件，这里是下钻的终点
+      kids = (view.files || []).map(f => ({
+        path: f.name, name: f.name, size: f.size, isFile: true
+      }));
+    }
   }
 
   const box = inner.getBoundingClientRect();
@@ -378,10 +409,19 @@ function renderMap() {
     let d = existing.get(info.path);
     if (!d) {
       d = document.createElement('div');
-      d.className = 'tile';
+      d.className = 'tile' + (info.isFile ? ' file' : '');
       d.dataset.path = info.path;
-      d.style.background = colorFor(info.name);
-      d.onclick = () => { if (!scanning) { CURRENT = info.path; renderMap(); renderBread(); } };
+      d.style.background = info.isFile ? '#39404e' : colorFor(info.name);
+      if (!info.isFile) {
+        // 注意：不能在这里捕获 scanning。方块多半是在扫描过程中创建的，
+        // 捕获当时的 true 会让它扫描结束后永远点不动（真实 bug）。
+        d.onclick = async () => {
+          if (STATE?.status === 'scanning') return;
+          CURRENT = info.path;
+          await renderMap();
+          renderBread();
+        };
+      }
       inner.appendChild(d);
     }
     d.style.left = t.x + 'px';
@@ -409,14 +449,16 @@ function renderBread() {
   const parts = CURRENT.split(/[\\/]/).filter(Boolean);
   const isWin = /^[A-Za-z]:$/.test(parts[0] || '');
   let acc = isWin ? parts[0] + '\\' : '/';
-  let html = '<span class="crumb" data-p="' + esc(acc) + '">' + esc(root) + '</span>';
+  // 第一段是根（盘符），显示成 C:\ 而不是把 root 整个放进来（否则 C:\D 会显示成 C:\D > D）
+  let html = '<span class="crumb" data-p="' + esc(acc) + '">' + esc(isWin ? parts[0] + '\\' : '/') + '</span>';
   for (let i = isWin ? 1 : 0; i < parts.length; i++) {
     acc = acc.endsWith('\\') || acc.endsWith('/') ? acc + parts[i] : acc + (isWin?'\\':'/') + parts[i];
     html += ' <span style="opacity:.4">›</span> <span class="crumb" data-p="' + esc(acc) + '">' + esc(parts[i]) + '</span>';
   }
   const b = $('bread'); b.innerHTML = html;
-  b.querySelectorAll('.crumb').forEach(el => el.onclick = () => {
-    CURRENT = el.dataset.p; renderMap(); renderBread();
+  b.querySelectorAll('.crumb').forEach(el => el.onclick = async () => {
+    CURRENT = el.dataset.p;
+    await renderMap(); renderBread();
   });
 }
 
@@ -509,7 +551,7 @@ async function poll() {
     $('scancur').textContent = STATE.current || '';
     $('bread').innerHTML = `<span class="scanpill"><span class="dotpulse"></span>`
       + `扫描中 · ${STATE.visited.toLocaleString()} 个目录 · ${STATE.current ? esc(STATE.current) : ''}</span>`;
-    renderMap();
+    await renderMap();
   }
 
   if (STATE.status === 'error') {
@@ -518,10 +560,12 @@ async function poll() {
   }
 
   if (STATE.status === 'done') {
-    if (!CURRENT) CURRENT = drillToMeaningful(STATE.scan?.tree, STATE.root);
+    if (!CURRENT) {
+      CURRENT = await drillToMeaningful(STATE.root);
+    }
     if (STATE.scan) {
       $('path').value = STATE.root;
-      renderMap(); renderBread();
+      await renderMap(); renderBread();
     }
     renderList();
     updateSum();
@@ -603,6 +647,7 @@ async function runClean(dryRun) {
 async function scanNow(path, depth) {
   window.__scanned = false;
   CURRENT = null;
+  for (const key of Object.keys(VIEW_CACHE)) delete VIEW_CACHE[key];
   document.querySelectorAll('#mapInner .tile').forEach(el => el.remove());
   try { await API.start_scan(path, depth); } catch (e) { toast('启动扫描失败：' + e.message); }
 }
@@ -648,7 +693,7 @@ $('selSafe').onclick = () => {
 $('selNone').onclick = () => { SELECTED.clear(); renderList(); updateSum(); };
 $('dry').onclick = () => doClean(true);
 $('run').onclick = () => doClean(false);
-window.addEventListener('resize', () => renderMap());
+window.addEventListener('resize', () => { renderMap().catch(() => {}); });
 
 // 启动：native 模式等 pywebview 注入 api 之后再拉数据（早于它会拿到 undefined，
 // 界面就停在空白）；浏览器模式直接起。

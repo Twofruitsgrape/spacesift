@@ -170,7 +170,12 @@ class GuiState:
                     "dirs": len(result.dirs),
                     "errors": result.errors,
                     "elapsed": round(result.elapsed, 1),
-                    "tree": result.dirs,
+                    # 只带浅层的一份做兜底（浏览器版用它离线渲染）；
+                    # 原生窗口下钻走 get_children，不需要整棵树。
+                    "tree": {
+                        path: size for path, size in result.dirs.items()
+                        if path.count(os.sep) <= result.root.count(os.sep) + 3
+                    },
                     "top_files": [
                         {"path": hit.path, "size": hit.size, "text": human_size(hit.size)}
                         for hit in result.top_files[:20]
@@ -270,6 +275,55 @@ class Api:
     def get_state(self) -> dict[str, Any]:
         return self.state.snapshot()
 
+    def get_children(self, path: str) -> dict[str, Any]:
+        """返回某个目录的**直接**子目录（从已扫描结果里切片）。
+
+        整棵树一次性传给前端在 depth 大时会撑爆 JSON（40 万条几十 MB），
+        前端拿到的是不完整数据 —— 明明有子目录却退化成显示文件。
+        所以只按需给一层。
+        """
+        with self.state._lock:
+            result = self.state.result
+        if result is None:
+            return {"dirs": [], "files": []}
+
+        base = os.path.abspath(path).rstrip("\\/")
+        prefix = base + os.sep
+        rows: list[dict[str, Any]] = []
+        for entry, size in result.dirs.items():
+            if not entry.startswith(prefix):
+                continue
+            rest = entry[len(prefix):]
+            if os.sep in rest:
+                continue
+            rows.append({"path": entry, "name": rest, "size": size, "text": human_size(size)})
+        rows.sort(key=lambda row: row["size"], reverse=True)
+
+        # 已经是叶子目录：把文件列出来，作为下钻的终点
+        files = self.list_files(path) if not rows else []
+        return {"dirs": rows, "files": files}
+
+    def list_files(self, path: str) -> list[dict[str, Any]]:
+        """实时列一个目录下的文件 —— 下钻到叶子时用来展示「再往下就是文件了」。
+
+        只做一个 ``os.scandir``，不递归，毫秒级；大的排在前面，最多 200 个。
+        """
+        rows: list[dict[str, Any]] = []
+        try:
+            with os.scandir(path) as iterator:
+                for entry in iterator:
+                    try:
+                        if entry.is_file(follow_symlinks=False):
+                            rows.append({"name": entry.name,
+                                         "size": entry.stat(follow_symlinks=False).st_size,
+                                         "text": human_size(entry.stat(follow_symlinks=False).st_size)})
+                    except OSError:
+                        continue
+        except OSError:
+            return []
+        rows.sort(key=lambda row: row["size"], reverse=True)
+        return rows[:200]
+
     def clean(self, ids: list[str], dry_run: bool = True) -> dict[str, Any]:
         return self.state.clean([str(i) for i in (ids or [])], bool(dry_run))
 
@@ -285,8 +339,12 @@ def default_root() -> str:
     return root if os.path.isdir(root) else os.path.abspath(os.sep)
 
 
-def run(path: str = "", *, depth: int = 3, width: int = 1280, height: int = 820) -> None:
-    """打开窗口，阻塞到窗口关闭。"""
+def run(path: str = "", *, depth: int = 6, width: int = 1280, height: int = 820) -> None:
+    """打开窗口，阻塞到窗口关闭。
+
+    ``depth`` 决定能下钻几层。3 层只够看盘符根的两级，点两下就到头；
+    6 层基本能钻到任何用户目录底部（再多也没有遍历代价，只是多留点条目）。
+    """
     api = Api()
     api.state.depth = depth
     api.state.root = os.path.abspath(path) if path else default_root()
