@@ -544,12 +544,15 @@ class Api:
     def stop_migrate(self) -> dict[str, Any]:
         return self.state.stop_migrate()
 
-    def get_children(self, path: str) -> dict[str, Any]:
+    def get_children(self, path: str, full: bool = False) -> dict[str, Any]:
         """返回某个目录的**直接**子目录（从已扫描结果里切片）。
 
         整棵树一次性传给前端在 depth 大时会撑爆 JSON（40 万条几十 MB），
         前端拿到的是不完整数据 —— 明明有子目录却退化成显示文件。
         所以只按需给一层。
+
+        ``full=True`` 是「深度清理模式」用的：不限 200、不做聚合兜底，
+        一个文件一行 —— 用户要的是「这个目录里到底有什么」，不能再被截断。
         """
         with self.state._lock:
             result = self.state.result
@@ -575,14 +578,14 @@ class Api:
             # 聚成一个「（N 个文件）」的灰块太笼统 —— 用户想知道到底是哪几个。
             file_bytes, file_count = self._direct_files(path)
             if file_count:
-                listed = self.list_files(path)      # 最多 200 个，按大小排好
+                listed = self.list_files(path, limit=None if full else 200)
                 for item in listed:
                     rows.append({
                         "path": item["path"], "name": item["name"],
                         "size": item["size"], "text": item["text"], "is_file": True,
                     })
                 # 超过 200 个时，剩下的零碎用一个块兜住，保证面积守恒
-                if file_count > len(listed):
+                if not full and file_count > len(listed):
                     rest_bytes = max(0, file_bytes - sum(item["size"] for item in listed))
                     if rest_bytes:
                         rows.append({
@@ -594,7 +597,7 @@ class Api:
             return {"dirs": rows, "files": []}
 
         # 已经是叶子目录：把文件列出来，作为下钻的终点
-        return {"dirs": [], "files": self.list_files(path)}
+        return {"dirs": [], "files": self.list_files(path, limit=None if full else 200)}
 
     def _direct_files(self, path: str) -> tuple[int, int]:
         """某个目录下**直接**放着的文件总量和个数（不递归）。"""
@@ -612,7 +615,7 @@ class Api:
             return 0, 0
         return total, count
 
-    def list_files(self, path: str) -> list[dict[str, Any]]:
+    def list_files(self, path: str, limit: int | None = 200) -> list[dict[str, Any]]:
         """实时列一个目录下的文件 —— 下钻到叶子时用来展示「再往下就是文件了」。
 
         只做一个 ``os.scandir``，不递归，毫秒级；大的排在前面，最多 200 个。
@@ -632,7 +635,7 @@ class Api:
         except OSError:
             return []
         rows.sort(key=lambda row: row["size"], reverse=True)
-        return rows[:200]
+        return rows if limit is None else rows[:limit]
 
     def clean(self, ids: list[str], dry_run: bool = True) -> dict[str, Any]:
         return self.state.clean([str(i) for i in (ids or [])], bool(dry_run))

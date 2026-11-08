@@ -156,6 +156,25 @@ footer .sum b{color:var(--accent);font-size:15px;font-family:ui-monospace,Consol
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px}
 
 /* ---------- 右栏范围提示 ---------- */
+.mode-tabs{display:flex;gap:4px;background:rgba(255,255,255,.05);padding:3px;border-radius:8px}
+.mode-tabs .tab{background:none;border:none;color:#8b93a7;font-size:12.5px;padding:6px 12px;
+  border-radius:6px;cursor:pointer}
+.mode-tabs .tab:hover{color:var(--fg)}
+.mode-tabs .tab.on{background:#2a3142;color:var(--fg)}
+
+/* 深度清理模式的清单 */
+.deep-filter{padding:8px 12px;border-bottom:1px solid var(--line)}
+.deep-filter input{width:100%;background:rgba(255,255,255,.05);border:1px solid var(--line);
+  border-radius:7px;color:var(--fg);font-size:12.5px;padding:7px 10px;outline:none}
+.deep-filter input:focus{border-color:#3d4a63}
+.deep-row{display:flex;justify-content:space-between;gap:12px;padding:7px 16px;
+  font-size:12.5px;border-bottom:1px solid rgba(255,255,255,.04);cursor:default}
+.deep-row.dir{cursor:pointer}
+.deep-row.dir:hover{background:rgba(255,255,255,.05)}
+.deep-row.is-file .dr-name{color:#98a2b3}
+.dr-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dr-size{color:var(--accent);white-space:nowrap;font-variant-numeric:tabular-nums}
+
 label.row{cursor:default}
 label.row:hover{background:rgba(255,255,255,.03)}
 .scope{padding:9px 16px 7px;color:#6e7681;font-size:11.5px;letter-spacing:.02em;
@@ -217,7 +236,10 @@ button.ghost:disabled{opacity:.4;cursor:not-allowed}
 
   <section id="right">
     <div class="panelhead">
-      <h2>推荐清理项</h2>
+      <div class="mode-tabs">
+        <button class="tab on" data-mode="recommend" title="只看值得处理的：缓存、可清理项、归档建议">推荐清理</button>
+        <button class="tab" data-mode="deep" title="把当前目录里的每一项都列出来，不做任何筛选">深度清理</button>
+      </div>
       <div style="display:flex;gap:8px">
         <button class="ghost" id="selSafe" title="全选可直接清理的项">全选安全项</button>
         <button class="ghost" id="selNone">取消全选</button>
@@ -272,8 +294,8 @@ const API = {
     if (isNative()) return window.pywebview.api.list_drives();
     return [];
   },
-  async get_children(path) {
-    if (isNative()) return window.pywebview.api.get_children(path);
+  async get_children(path, full) {
+    if (isNative()) return window.pywebview.api.get_children(path, !!full);
     // 浏览器模式：没有后端切片能力，退回本地浅层树（最多 3 层）
     const tree = STATE?.scan?.tree || {};
     return { dirs: childrenOf(tree, path), files: [] };
@@ -623,6 +645,100 @@ const CAT_HELP = {
   manual:'系统功能或你的个人文件，工具永远不动。'
 };
 
+/* ---------------- 清理模式：推荐 / 深度 ---------------- */
+let MODE = 'recommend';      // recommend | deep
+const DEEP_CACHE = {};
+
+async function loadDeepView(path) {
+  if (DEEP_CACHE[path]) return DEEP_CACHE[path];
+  let view = { dirs: [], files: [] };
+  try {
+    view = (await API.get_children(path, true)) || view;
+  } catch (e) {
+    view = { dirs: [], files: [] };
+  }
+  DEEP_CACHE[path] = view;
+  return view;
+}
+
+/* 深度模式：把当前目录里的每一项都列出来，一个不漏。
+   推荐模式只挑值得处理的，方块图又按面积比例画 —— 几百 KB 的文件在几十 GB 旁边
+   根本看不见，用户会以为没扫到。这个模式就是兜这个底。 */
+// 深度模式是「看清单」，跟勾选清理无关 —— 相关的按钮要收起来，别误导用户
+function syncModeChrome() {
+  const deep = MODE === 'deep';
+  const safe = $('selSafe'), none = $('selNone');
+  if (safe) safe.style.display = deep ? 'none' : '';
+  if (none) none.style.display = deep ? 'none' : '';
+  const foot = document.querySelector('footer');
+  if (foot) foot.style.display = deep ? 'none' : '';
+}
+
+async function renderDeepList() {
+  const list = $('list');
+  if (!CURRENT) {
+    list.innerHTML = '<div style="padding:20px 16px;color:var(--muted);font-size:13px">先扫描一个目录。</div>';
+    return;
+  }
+  list.innerHTML = '<div style="padding:16px;color:var(--muted);font-size:13px">读取中…</div>';
+
+  const view = await loadDeepView(CURRENT);
+  const rows = [
+    ...(view.dirs || []).map(d => Object.assign({}, d, {
+      __file: !!(d.is_file || d.file_group),
+    })),
+    ...(view.files || []).map(f => Object.assign({}, f, { is_file: true, __file: true })),
+  ].sort((a, b) => b.size - a.size);
+
+  if (!rows.length) {
+    list.innerHTML = '<div style="padding:20px 16px;color:var(--muted);font-size:13px">这个目录是空的。</div>';
+    return;
+  }
+
+  const total = rows.reduce((acc, item) => acc + item.size, 0);
+  const shown = rows.slice(0, 2000);
+  let out = `<div class="scope">范围 · ${esc(CURRENT)}　共 ${rows.length} 项　合计 ${fmt(total)}</div>
+    <div class="deep-filter"><input id="deepFilter" type="text"
+      placeholder="筛选文件名…（按大小排序，小的在最后）" spellcheck="false" autocomplete="off"></div>`;
+
+  for (const row of shown) {
+    const kind = row.__file ? 'is-file' : 'dir';
+    out += `<div class="deep-row ${kind}" data-path="${esc(row.path)}" data-name="${esc(row.name.toLowerCase())}">
+      <span class="dr-name" title="${esc(row.path)}">${esc(row.name)}</span>
+      <span class="dr-size">${fmt(row.size)}</span></div>`;
+  }
+  if (rows.length > shown.length) {
+    out += `<div style="padding:12px 16px;color:#6e7681;font-size:12px">
+      还有 ${rows.length - shown.length} 项未列出（超过 2000 行会卡）</div>`;
+  }
+  list.innerHTML = out;
+
+  const filterBox = $('deepFilter');
+  if (filterBox) {
+    filterBox.oninput = () => {
+      const query = filterBox.value.trim().toLowerCase();
+      list.querySelectorAll('.deep-row').forEach(el => {
+        el.style.display = (!query || el.dataset.name.includes(query)) ? '' : 'none';
+      });
+    };
+  }
+
+  list.querySelectorAll('.deep-row').forEach(el => {
+    const row = rows.find(item => item.path === el.dataset.path);
+    if (!row) return;
+    if (!row.__file) {
+      el.onclick = async () => {
+        CURRENT = row.path;
+        await renderMap();
+        renderBread();
+      };
+    }
+    el.oncontextmenu = (event) => openContextMenu(event, {
+      path: row.path, name: row.name, size: row.size, isFile: row.__file,
+    });
+  });
+}
+
 /* 右栏只显示落在当前方块图目录内的清理项。
    规则命中的是具体缓存目录，和左边下钻的路径天然可以对齐。 */
 function scopeKey(path) {
@@ -643,6 +759,11 @@ function scopedRows() {
 }
 
 function renderList() {
+  syncModeChrome();
+  if (MODE === 'deep') {
+    renderDeepList().catch(() => {});
+    return;
+  }
   const all = STATE?.opportunities || [];
   const rows = scopedRows();
   const list = $('list');
@@ -1007,6 +1128,7 @@ async function scanNow(path, depth) {
   window.__idleShown = false;
   CURRENT = null;
   for (const key of Object.keys(VIEW_CACHE)) delete VIEW_CACHE[key];
+  for (const key of Object.keys(DEEP_CACHE)) delete DEEP_CACHE[key];
   document.querySelectorAll('#mapInner .tile').forEach(el => el.remove());
   try { await API.start_scan(path, depth || null); } catch (e) { toast('启动扫描失败：' + e.message); }
 }
@@ -1064,6 +1186,15 @@ $('stop').onclick = async () => {
   if (!result || !result.ok) toast('现在没有正在进行的扫描');
   poll();
 };
+document.querySelectorAll('.mode-tabs .tab').forEach(btn => {
+  btn.onclick = () => {
+    MODE = btn.dataset.mode;
+    document.querySelectorAll('.mode-tabs .tab')
+      .forEach(other => other.classList.toggle('on', other === btn));
+    renderList();
+  };
+});
+
 $('run').onclick = () => doClean();
 $('archiveItem').onclick = () => doArchive();
 $('stopArchive').onclick = async () => {
