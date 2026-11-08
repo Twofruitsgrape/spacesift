@@ -436,7 +436,9 @@ async function renderMap() {
   } else {
     if (!CURRENT) { inner.innerHTML = ''; return; }
     const view = await loadView(CURRENT);
-    kids = (view.dirs || []).map(d => ({ path: d.path, name: d.name, size: d.size }));
+    kids = (view.dirs || []).map(d => ({
+      path: d.path, name: d.name, size: d.size, isFile: !!d.file_group
+    }));
     if (!kids.length) {
       // 没有子目录了：列文件，这里是下钻的终点
       kids = (view.files || []).map(f => ({

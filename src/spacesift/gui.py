@@ -364,14 +364,43 @@ class Api:
             if not entry.startswith(prefix):
                 continue
             rest = entry[len(prefix):]
-            if os.sep in rest:
+            # rest 为空说明 entry 就是 path 自己（dirs 里存了根目录的聚合值），
+            # 它不是子目录；放进去会变成一个没有名字、点了也进不去的方块。
+            if not rest or os.sep in rest:
                 continue
             rows.append({"path": entry, "name": rest, "size": size, "text": human_size(size)})
         rows.sort(key=lambda row: row["size"], reverse=True)
 
+        if rows:
+            # 有子目录也有散落文件：把文件聚成一块，否则方块图面积对不上
+            # （根目录的 pagefile.sys、hiberfil.sys 这类大文件会凭空消失）。
+            file_bytes, file_count = self._direct_files(path)
+            if file_bytes:
+                rows.append({
+                    "path": "", "name": f"（{file_count} 个文件）", "size": file_bytes,
+                    "text": human_size(file_bytes), "file_group": True,
+                })
+                rows.sort(key=lambda row: row["size"], reverse=True)
+            return {"dirs": rows, "files": []}
+
         # 已经是叶子目录：把文件列出来，作为下钻的终点
-        files = self.list_files(path) if not rows else []
-        return {"dirs": rows, "files": files}
+        return {"dirs": [], "files": self.list_files(path)}
+
+    def _direct_files(self, path: str) -> tuple[int, int]:
+        """某个目录下**直接**放着的文件总量和个数（不递归）。"""
+        total = count = 0
+        try:
+            with os.scandir(path) as iterator:
+                for entry in iterator:
+                    try:
+                        if entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                            count += 1
+                    except OSError:
+                        continue
+        except OSError:
+            return 0, 0
+        return total, count
 
     def list_files(self, path: str) -> list[dict[str, Any]]:
         """实时列一个目录下的文件 —— 下钻到叶子时用来展示「再往下就是文件了」。
