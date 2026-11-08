@@ -101,7 +101,7 @@ spacesift --version
 spacesift gui
 ```
 
-![SpaceSift 界面](docs/assets/ui.png)
+![SpaceSift 演示：扫描 → 方块生长 → 全选 → 勾选](docs/assets/demo.gif)
 
 - 路径可以**手动输入**，也可以用左边的**磁盘下拉**选整块盘，或点 **浏览…** 弹系统文件夹对话框；
 - 扫描时方块**一块块长大**（边扫边画），不是盯着一个转圈；
@@ -110,6 +110,10 @@ spacesift gui
   `archive` / `manual` **没有勾选框**；
 - 勾选后底部实时显示「已选 X GB」，先点 **演练** 看效果，再点 **清理选中项** 才真删，
   真删前有二次确认弹窗。
+
+扫完之后长这样：
+
+![SpaceSift 界面](docs/assets/ui.png)
 
 界面是 40 KB 的 HTML，用系统自带的 WebView2 渲染（Windows 10/11 都有），
 所以体积只有 Electron 应用的十分之一。
