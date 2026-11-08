@@ -131,6 +131,17 @@ footer .sum b{color:var(--accent);font-size:15px;font-family:ui-monospace,Consol
   opacity:0;transform:translateY(-8px);transition:.25s;pointer-events:none;max-width:420px;
   box-shadow:0 8px 24px rgba(0,0,0,.45)}
 .toast.on{opacity:1;transform:translateY(0)}
+
+/* ---------- 右键菜单 ---------- */
+.ctxmenu{position:fixed;display:none;background:var(--panel2);border:1px solid var(--line);
+  border-radius:9px;padding:5px;min-width:196px;box-shadow:0 14px 36px rgba(0,0,0,.62);z-index:90}
+.ctxmenu.on{display:block}
+.ctxmenu button{display:block;width:100%;text-align:left;background:none;border:none;
+  color:var(--fg);padding:8px 12px;border-radius:6px;font-size:13px;cursor:pointer}
+.ctxmenu button:hover{background:#2a3142}
+.ctxmenu .sep{height:1px;background:var(--line);margin:4px 6px}
+.ctxmenu .hint{padding:4px 12px 6px;color:#6e7681;font-size:11px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px}
 </style>
 </head>
 <body>
@@ -181,6 +192,7 @@ footer .sum b{color:var(--accent);font-size:15px;font-family:ui-monospace,Consol
 
 <div id="overlay"><div class="card" id="card"></div></div>
 <div class="toast" id="toast"></div>
+<div class="ctxmenu" id="ctxmenu"></div>
 
 <script>
 const TOKEN = new URLSearchParams(location.search).get('t') || '';
@@ -226,6 +238,14 @@ const API = {
   async pick_folder() {
     if (isNative()) return window.pywebview.api.pick_folder();
     return '';
+  },
+  async reveal(path) {
+    if (isNative()) return window.pywebview.api.reveal(path);
+    return false;
+  },
+  async open_scan(path) {
+    if (isNative()) return window.pywebview.api.open_scan(path);
+    return { ok: false };
   }
 };
 const fmt = n => {
@@ -422,6 +442,7 @@ async function renderMap() {
           renderBread();
         };
       }
+      d.oncontextmenu = (event) => openContextMenu(event, info);
       inner.appendChild(d);
     }
     d.style.left = t.x + 'px';
@@ -583,6 +604,63 @@ function toast(msg, ms) {
   const t = $('toast'); t.textContent = msg; t.classList.add('on');
   clearTimeout(t._h); t._h = setTimeout(()=>t.classList.remove('on'), ms || 3200);
 }
+
+/* ---------------- 右键菜单 ---------------- */
+function closeContextMenu() {
+  $('ctxmenu').classList.remove('on');
+}
+
+function openContextMenu(event, info) {
+  event.preventDefault();
+  event.stopPropagation();
+  const menu = $('ctxmenu');
+  const isFile = !!info.isFile;
+
+  menu.innerHTML =
+    `<div class="hint" title="${esc(info.path)}">${esc(info.path)}</div><div class="sep"></div>` +
+    `<button data-act="reveal">${isFile ? '打开所在文件夹并选中' : '在资源管理器中打开'}</button>` +
+    `<button data-act="copy">复制路径</button>` +
+    (isFile ? '' : '<div class="sep"></div><button data-act="scan">从这里开始扫描</button>');
+
+  menu.style.left = '0px';
+  menu.style.top = '0px';
+  menu.classList.add('on');
+
+  // 贴边时向内翻转，别让菜单跑到窗口外
+  const rect = menu.getBoundingClientRect();
+  const x = Math.min(event.clientX, window.innerWidth - rect.width - 8);
+  const y = Math.min(event.clientY, window.innerHeight - rect.height - 8);
+  menu.style.left = Math.max(6, x) + 'px';
+  menu.style.top = Math.max(6, y) + 'px';
+
+  menu.querySelectorAll('button').forEach(btn => {
+    btn.onclick = async (clickEvent) => {
+      clickEvent.stopPropagation();
+      const act = btn.dataset.act;
+      closeContextMenu();
+      if (act === 'reveal') {
+        const ok = await API.reveal(info.path);
+        if (!ok) toast('打不开这个位置（可能已被移动或没有权限）');
+      } else if (act === 'copy') {
+        try {
+          await navigator.clipboard.writeText(info.path);
+          toast('已复制路径');
+        } catch (e) {
+          toast('复制失败');
+        }
+      } else if (act === 'scan') {
+        for (const key of Object.keys(VIEW_CACHE)) delete VIEW_CACHE[key];
+        CURRENT = null;
+        await API.open_scan(info.path);
+      }
+    };
+  });
+}
+
+document.addEventListener('click', closeContextMenu);
+document.addEventListener('scroll', closeContextMenu, true);
+window.addEventListener('blur', closeContextMenu);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeContextMenu(); });
 
 /* ---------------- 清理 ---------------- */
 function selectedRows() {

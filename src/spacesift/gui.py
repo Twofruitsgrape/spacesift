@@ -257,14 +257,27 @@ class Api:
         return picked[0] if isinstance(picked, (list, tuple)) else str(picked)
 
     def reveal(self, path: str) -> bool:
-        """在资源管理器中打开某个目录。"""
+        """在资源管理器里打开：目录直接进，文件则定位并选中它。"""
         try:
-            if os.path.isdir(path):
-                os.startfile(path)  # type: ignore[attr-defined]
+            target = os.path.abspath(path)
+            if os.path.isdir(target):
+                os.startfile(target)  # type: ignore[attr-defined]
+                return True
+            if os.path.isfile(target):
+                # explorer 的 /select 必须和路径拼成一个参数：
+                # ["explorer", "/select,", path] 会被拆成两个参数，explorer 只打开默认目录。
+                subprocess.run(["explorer", f"/select,{target}"], check=False)
                 return True
         except OSError:
             return False
         return False
+
+    def open_scan(self, path: str) -> dict[str, Any]:
+        """把某个目录设为新的扫描起点（右键菜单里的「从这里扫描」）。"""
+        if os.path.isdir(path):
+            self.state.start_scan(path)
+            return {"ok": True}
+        return {"ok": False}
 
     # -- 扫描 --------------------------------------------------------
 
