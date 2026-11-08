@@ -281,6 +281,11 @@ const API = {
     if (isNative()) return window.pywebview.api.stop_scan();
     return { ok: false };
   },
+  async copy_text(text) {
+    if (isNative()) return window.pywebview.api.copy_text(text);
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch (e) { return false; }
+  },
   async start_migrate(ids, target) {
     if (isNative()) return window.pywebview.api.start_migrate(ids, target);
     return { ok: false, error: '归档只能在桌面版里用' };
@@ -453,7 +458,8 @@ async function renderMap() {
     if (!kids.length) {
       // 没有子目录了：列文件，这里是下钻的终点
       kids = (view.files || []).map(f => ({
-        path: f.name, name: f.name, size: f.size, isFile: true
+        // 必须是完整路径：只给文件名的话，右键「打开位置」会解析到程序的工作目录
+        path: f.path || f.name, name: f.name, size: f.size, isFile: true
       }));
     }
   }
@@ -811,12 +817,11 @@ function openContextMenu(event, info) {
         const ok = await API.reveal(info.path);
         if (!ok) toast('打不开这个位置（可能已被移动或没有权限）');
       } else if (act === 'copy') {
-        try {
-          await navigator.clipboard.writeText(info.path);
-          toast('已复制路径');
-        } catch (e) {
-          toast('复制失败');
-        }
+        // 右键聚合块（「N 个文件」）时 path 就是所属目录，复制它本身
+        const text = info.path || CURRENT || '';
+        if (!text) { toast('这里没有可复制的路径'); return; }
+        const copied = await API.copy_text(text);
+        toast(copied ? `已复制：${text}` : '复制失败（剪贴板被其它程序占用）');
       } else if (act === 'scan') {
         for (const key of Object.keys(VIEW_CACHE)) delete VIEW_CACHE[key];
         CURRENT = null;

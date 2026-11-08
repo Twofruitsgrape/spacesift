@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -36,6 +37,68 @@ APP_NAME = "SpaceSift"
 def ui_html() -> str:
     with open(_UI_PATH, encoding="utf-8") as handle:
         return handle.read()
+
+
+def set_clipboard(text: str) -> bool:
+    """写系统剪贴板（Windows）。失败返回 False，绝不抛。
+
+    必须显式声明 restype：``GlobalAlloc`` 默认按 ``c_int`` 取返回值，64 位下句柄
+    会被截断成 32 位，后面 ``GlobalLock`` 直接失败 —— 症状就是「复制失败」。
+    """
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        user32.OpenClipboard.argtypes = [wintypes.HWND]
+        user32.OpenClipboard.restype = wintypes.BOOL
+        user32.EmptyClipboard.restype = wintypes.BOOL
+        user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+        user32.SetClipboardData.restype = wintypes.HANDLE
+        user32.CloseClipboard.restype = wintypes.BOOL
+
+        kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+        kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+        kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalLock.restype = wintypes.LPVOID
+        kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+
+        CF_UNICODETEXT = 13
+        GMEM_MOVEABLE = 0x0002
+        payload = text.encode("utf-16-le") + b"\x00\x00"
+
+        # 剪贴板是独占资源，别的程序可能正占着，重试几次再放弃
+        for _ in range(6):
+            if user32.OpenClipboard(None):
+                break
+            time.sleep(0.05)
+        else:
+            return False
+
+        try:
+            user32.EmptyClipboard()
+            handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(payload))
+            if not handle:
+                return False
+            pointer = kernel32.GlobalLock(handle)
+            if not pointer:
+                kernel32.GlobalFree(handle)
+                return False
+            ctypes.memmove(pointer, payload, len(payload))
+            kernel32.GlobalUnlock(handle)
+            if not user32.SetClipboardData(CF_UNICODETEXT, handle):
+                kernel32.GlobalFree(handle)
+                return False
+            return True
+        finally:
+            user32.CloseClipboard()
+    except Exception:  # noqa: BLE001 - 剪贴板失败不该让界面崩
+        return False
 
 
 def list_drives() -> list[dict[str, Any]]:
@@ -425,7 +488,11 @@ class Api:
     def reveal(self, path: str) -> bool:
         """在资源管理器里打开：目录直接进，文件则定位并选中它。"""
         try:
+            if not path:
+                return False
             target = os.path.abspath(path)
+            if not os.path.exists(target):
+                return False
             if os.path.isdir(target):
                 os.startfile(target)  # type: ignore[attr-defined]
                 return True
@@ -437,6 +504,14 @@ class Api:
         except OSError:
             return False
         return False
+
+    def copy_text(self, text: str) -> bool:
+        """把文字写进系统剪贴板。
+
+        pywebview 的页面是 ``html=`` 内联的，不是 http 源，``navigator.clipboard``
+        经常直接抛异常（前端只会看到「复制失败」）。这里走 Win32 剪贴板。
+        """
+        return set_clipboard(str(text or ""))
 
     def open_scan(self, path: str) -> dict[str, Any]:
         """把某个目录设为新的扫描起点（右键菜单里的「从这里扫描」）。"""
@@ -501,7 +576,9 @@ class Api:
             file_bytes, file_count = self._direct_files(path)
             if file_bytes:
                 rows.append({
-                    "path": "", "name": f"（{file_count} 个文件）", "size": file_bytes,
+                    # 这里必须给真实目录：给空串的话 os.path.abspath("") 会变成
+                    # 程序的当前工作目录，右键「打开位置」就跳去 exe 所在文件夹了。
+                    "path": base, "name": f"（{file_count} 个文件）", "size": file_bytes,
                     "text": human_size(file_bytes), "file_group": True,
                 })
                 rows.sort(key=lambda row: row["size"], reverse=True)
@@ -537,9 +614,10 @@ class Api:
                 for entry in iterator:
                     try:
                         if entry.is_file(follow_symlinks=False):
-                            rows.append({"name": entry.name,
-                                         "size": entry.stat(follow_symlinks=False).st_size,
-                                         "text": human_size(entry.stat(follow_symlinks=False).st_size)})
+                            stat = entry.stat(follow_symlinks=False)
+                            rows.append({"name": entry.name, "path": entry.path,
+                                         "size": stat.st_size,
+                                         "text": human_size(stat.st_size)})
                     except OSError:
                         continue
         except OSError:
