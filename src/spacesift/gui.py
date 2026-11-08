@@ -40,6 +40,55 @@ def ui_html() -> str:
         return handle.read()
 
 
+def _message_box(title: str, body: str) -> None:
+    """弹出系统消息框。``--windowed`` 打包后没有控制台，这是唯一能告诉用户出事了的途径。"""
+    try:
+        import ctypes
+        # MB_ICONERROR | MB_OK
+        ctypes.windll.user32.MessageBoxW(None, body, title, 0x10)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def has_webview2() -> bool:
+    """Windows 上 pywebview 靠 Edge WebView2 运行时渲染界面。
+
+    Win11 自带；Win10 装过新版 Edge 的通常也有。但精简版系统、长期不更新的
+    机器可能没有 —— 这时 ``webview.start()`` 会抛异常，而双击 exe 的用户看不到
+    任何窗口，只会以为「点了没反应」。
+    """
+    if not sys.platform.startswith("win"):
+        return True
+
+    import winreg
+
+    client = r"\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+    for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        for prefix in (r"SOFTWARE\WOW6432Node", r"SOFTWARE"):
+            try:
+                with winreg.OpenKey(root, prefix + client) as handle:
+                    version, _ = winreg.QueryValueEx(handle, "pv")
+                    if version:
+                        return True
+            except OSError:
+                continue
+
+    # 注册表没写全时，退回看安装目录
+    for base in (os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles")):
+        if base and os.path.isdir(os.path.join(base, "Microsoft", "EdgeWebView", "Application")):
+            return True
+    return False
+
+
+WEBVIEW2_HELP = (
+    "这台电脑缺少 Microsoft Edge WebView2 运行时，界面无法显示。\n\n"
+    "安装后重新打开即可（免费，约 2 MB）：\n"
+    "https://developer.microsoft.com/microsoft-edge/webview2/\n\n"
+    "在页面里选「Evergreen Standalone Installer」的 x64 版本。\n"
+    "Windows 11 和装过新版 Edge 的 Windows 10 一般都已经有。"
+)
+
+
 def set_clipboard(text: str) -> bool:
     """写系统剪贴板（Windows）。失败返回 False，绝不抛。
 
@@ -694,4 +743,12 @@ def run(path: str = "", *, depth: int = 6, width: int = 1280, height: int = 820)
     if path:
         api.state.start_scan(api.state.root)
 
-    webview.start(debug=False)
+    if not has_webview2():
+        _message_box(APP_NAME, WEBVIEW2_HELP)
+        return
+
+    try:
+        webview.start(debug=False)
+    except Exception as exc:  # noqa: BLE001 - 打包后没有控制台，必须弹窗告知
+        _message_box(APP_NAME, f"界面启动失败：\n{exc}\n\n如果提示与 WebView2 有关，请先安装运行时：\n"
+                               "https://developer.microsoft.com/microsoft-edge/webview2/")
