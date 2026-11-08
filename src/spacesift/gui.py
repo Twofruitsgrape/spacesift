@@ -27,6 +27,7 @@ from .migrate import execute as migrate_execute
 from .migrate import free_space, human_size as migrate_size, plan as migrate_plan
 from .report import disk_info
 from .rules import detect_all
+from .trash import trash_paths
 from .scan import ScanResult, human_size, scan
 
 _UI_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui.html")
@@ -504,6 +505,20 @@ class Api:
         except OSError:
             return False
         return False
+
+    def trash(self, paths: list[str]) -> dict[str, Any]:
+        """把指定路径移入回收站（可恢复）。深度清理模式用。
+
+        它不走清理的白名单：用户可能在深度模式里勾桌面上的论文或照片。
+        安全的底线换成「进回收站 + 系统目录一律拒绝」。
+        """
+        report = trash_paths([str(item) for item in (paths or [])])
+        return {
+            "ok": report.ok,
+            "removed": report.removed,
+            "refused": report.refused,
+            "message": report.summary(),
+        }
 
     def copy_text(self, text: str) -> bool:
         """把文字写进系统剪贴板。

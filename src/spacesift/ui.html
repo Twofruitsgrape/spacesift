@@ -167,8 +167,10 @@ footer .sum b{color:var(--accent);font-size:15px;font-family:ui-monospace,Consol
 .deep-filter input{width:100%;background:rgba(255,255,255,.05);border:1px solid var(--line);
   border-radius:7px;color:var(--fg);font-size:12.5px;padding:7px 10px;outline:none}
 .deep-filter input:focus{border-color:#3d4a63}
-.deep-row{display:flex;justify-content:space-between;gap:12px;padding:7px 16px;
+.deep-row{display:flex;align-items:center;gap:9px;padding:7px 16px;
   font-size:12.5px;border-bottom:1px solid rgba(255,255,255,.04);cursor:default}
+.deep-row input[type=checkbox]{flex:0 0 auto;margin:0;cursor:pointer}
+.deep-row .dr-name{flex:1 1 auto}
 .deep-row.dir{cursor:pointer}
 .deep-row.dir:hover{background:rgba(255,255,255,.05)}
 .deep-row.is-file .dr-name{color:#98a2b3}
@@ -200,6 +202,8 @@ label.row:hover{background:rgba(255,255,255,.03)}
 .fl-size{color:var(--accent);white-space:nowrap;font-variant-numeric:tabular-nums}
 
 button.ghost:disabled{opacity:.4;cursor:not-allowed}
+button.primary.danger{background:#7f2f33}
+button.primary.danger:hover{background:#9c3a3f}
 </style>
 </head>
 <body>
@@ -250,6 +254,7 @@ button.ghost:disabled{opacity:.4;cursor:not-allowed}
       <div class="sum">已选 <b id="sum">0 B</b> · <span id="cnt">0 项</span><span id="migsum"></span></div>
       <button class="primary" id="run">清理选中项</button>
       <button class="primary archive" id="archiveItem" style="display:none">归档选中项</button>
+      <button class="primary danger" id="deepDelete" style="display:none">移入回收站</button>
       <button id="stopArchive" style="display:none">停止归档</button>
     </footer>
   </section>
@@ -323,6 +328,10 @@ const API = {
   async stop_scan() {
     if (isNative()) return window.pywebview.api.stop_scan();
     return { ok: false };
+  },
+  async trash(paths) {
+    if (isNative()) return window.pywebview.api.trash(paths);
+    return { ok: false, message: '回收站操作只能在桌面版里用' };
   },
   async copy_text(text) {
     if (isNative()) return window.pywebview.api.copy_text(text);
@@ -648,6 +657,7 @@ const CAT_HELP = {
 /* ---------------- 清理模式：推荐 / 深度 ---------------- */
 let MODE = 'recommend';      // recommend | deep
 const DEEP_CACHE = {};
+const DEEP_SELECTED = new Map();   // path -> { size, name }
 
 async function loadDeepView(path) {
   if (DEEP_CACHE[path]) return DEEP_CACHE[path];
@@ -667,11 +677,13 @@ async function loadDeepView(path) {
 // 深度模式是「看清单」，跟勾选清理无关 —— 相关的按钮要收起来，别误导用户
 function syncModeChrome() {
   const deep = MODE === 'deep';
-  const safe = $('selSafe'), none = $('selNone');
-  if (safe) safe.style.display = deep ? 'none' : '';
-  if (none) none.style.display = deep ? 'none' : '';
+  // 「全选安全项」只对推荐模式有意义（深度模式里什么都可能被勾上）
+  $('selSafe').style.display = deep ? 'none' : '';
+  $('run').style.display = deep ? 'none' : '';
+  $('deepDelete').style.display = deep ? '' : 'none';
+  if (deep) $('archiveItem').style.display = 'none';
   const foot = document.querySelector('footer');
-  if (foot) foot.style.display = deep ? 'none' : '';
+  if (foot) foot.style.display = '';
 }
 
 async function renderDeepList() {
@@ -703,7 +715,9 @@ async function renderDeepList() {
 
   for (const row of shown) {
     const kind = row.__file ? 'is-file' : 'dir';
+    const checked = DEEP_SELECTED.has(row.path) ? ' checked' : '';
     out += `<div class="deep-row ${kind}" data-path="${esc(row.path)}" data-name="${esc(row.name.toLowerCase())}">
+      <input type="checkbox" data-deep="${esc(row.path)}"${checked}>
       <span class="dr-name" title="${esc(row.path)}">${esc(row.name)}</span>
       <span class="dr-size">${fmt(row.size)}</span></div>`;
   }
@@ -712,6 +726,7 @@ async function renderDeepList() {
       还有 ${rows.length - shown.length} 项未列出（超过 2000 行会卡）</div>`;
   }
   list.innerHTML = out;
+  updateSum();
 
   const filterBox = $('deepFilter');
   if (filterBox) {
@@ -726,6 +741,17 @@ async function renderDeepList() {
   list.querySelectorAll('.deep-row').forEach(el => {
     const row = rows.find(item => item.path === el.dataset.path);
     if (!row) return;
+
+    const box = el.querySelector('input[type=checkbox]');
+    if (box) {
+      box.onclick = (event) => {
+        event.stopPropagation();          // 勾选不等于下钻
+        if (box.checked) DEEP_SELECTED.set(row.path, { size: row.size, name: row.name });
+        else DEEP_SELECTED.delete(row.path);
+        updateSum();
+      };
+    }
+
     if (!row.__file) {
       el.onclick = async () => {
         CURRENT = row.path;
@@ -845,6 +871,17 @@ function syncSelectButtons() {
 }
 
 function updateSum() {
+  if (MODE === 'deep') {
+    let bytes = 0;
+    for (const info of DEEP_SELECTED.values()) bytes += info.size;
+    $('sum').textContent = fmt(bytes);
+    $('cnt').textContent = DEEP_SELECTED.size + ' 项';
+    const btn = $('deepDelete');
+    btn.disabled = DEEP_SELECTED.size === 0;
+    btn.textContent = DEEP_SELECTED.size
+      ? `移入回收站 (${fmt(bytes)})` : '移入回收站';
+    return;
+  }
   const rows = STATE?.opportunities || [];
   let cleanBytes = 0, cleanCount = 0, archBytes = 0, archCount = 0;
   for (const r of rows) {
@@ -1091,6 +1128,48 @@ async function doArchive() {
   };
 }
 
+async function doDeepDelete() {
+  const items = [...DEEP_SELECTED.entries()].map(([path, info]) => ({ path, ...info }));
+  if (!items.length) return;
+  const total = items.reduce((acc, item) => acc + item.size, 0);
+
+  const list = items.slice(0, 200).map(item => `<div class="fl-row">
+    <span class="fl-name" title="${esc(item.path)}">${esc(item.path)}</span>
+    <span class="fl-size">${fmt(item.size)}</span></div>`).join('');
+  const more = items.length > 200 ? `<div style="padding:8px 2px;color:#6e7681;font-size:12px">…还有 ${items.length - 200} 项</div>` : '';
+
+  $('card').innerHTML = `<h3>把 ${items.length} 项移入回收站？</h3>
+    <p>合计 <b style="color:var(--accent)">${fmt(total)}</b></p>
+    <div class="filelist">${list}${more}</div>
+    <p style="color:#8b93a7;font-size:12.5px;line-height:1.8">
+      <b>是移入回收站，不是永久删除</b> —— 反悔了可以从回收站还原。<br>
+      Windows / Program Files / ProgramData 下的东西一律拒绝。</p>
+    <div class="actions"><button class="ghost" id="cx">取消</button>
+    <button class="primary danger" id="ok">移入回收站</button></div>`;
+  $('overlay').classList.add('on');
+  $('cx').onclick = () => $('overlay').classList.remove('on');
+
+  $('ok').onclick = async () => {
+    $('overlay').classList.remove('on');
+    toast('正在移入回收站…', 60000);
+    let res;
+    try {
+      res = await API.trash(items.map(item => item.path));
+    } catch (e) {
+      toast('操作失败：' + e.message);
+      return;
+    }
+    if (!res || !res.ok) {
+      toast((res && res.message) || '没有可删除的项');
+      return;
+    }
+    DEEP_SELECTED.clear();
+    for (const key of Object.keys(DEEP_CACHE)) delete DEEP_CACHE[key];
+    toast(res.message || '已移入回收站', 6000);
+    renderList();
+  };
+}
+
 async function runClean() {
   const ids = selectedRows().map(r => r.id);
   $('run').disabled = true;
@@ -1174,7 +1253,11 @@ $('selSafe').onclick = () => {
   for (const r of scopedRows()) if (r.category === 'junk' || r.category === 'review') SELECTED.add(r.id);
   renderList(); updateSum();
 };
-$('selNone').onclick = () => { SELECTED.clear(); renderList(); updateSum(); };
+$('selNone').onclick = () => {
+  SELECTED.clear();
+  DEEP_SELECTED.clear();
+  renderList(); updateSum();
+};
 $('pause').onclick = async () => {
   const isPaused = STATE?.status === 'paused';
   const result = await (isPaused ? API.resume_scan() : API.pause_scan());
@@ -1196,6 +1279,7 @@ document.querySelectorAll('.mode-tabs .tab').forEach(btn => {
 });
 
 $('run').onclick = () => doClean();
+$('deepDelete').onclick = () => doDeepDelete();
 $('archiveItem').onclick = () => doArchive();
 $('stopArchive').onclick = async () => {
   const r = await API.stop_migrate();
