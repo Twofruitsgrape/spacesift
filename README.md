@@ -1,9 +1,10 @@
 # SpaceSift · 磁盘一键清理
 
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
+[![CI](https://github.com/Twofruitsgrape/spacesift/actions/workflows/ci.yml/badge.svg)](https://github.com/Twofruitsgrape/spacesift/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-46%20passed-brightgreen.svg)](tests/)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](pyproject.toml)
+[![Release](https://img.shields.io/github/v/release/Twofruitsgrape/spacesift)](https://github.com/Twofruitsgrape/spacesift/releases)
 
 > **sift** /sɪft/ —— 筛。把一堆东西过一遍筛子，留下该留的，倒掉该倒的。
 >
