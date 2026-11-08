@@ -134,6 +134,16 @@ footer .sum b{color:var(--accent);font-size:15px;font-family:ui-monospace,Consol
 .scanpill.paused{background:rgba(224,179,65,.13);color:#e0b341}
 .scanpill.paused .dotpulse{animation:none;background:#e0b341}
 
+/* 还没开始扫描时的引导 */
+.idle-box{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:12px;text-align:center;padding:24px}
+.idle-box .t{font-size:17px;color:var(--fg);font-weight:600}
+.idle-box .s{font-size:13px;color:var(--muted);line-height:1.7;max-width:420px}
+.idle-box .go{margin-top:6px;background:#2f6f4f;color:#eaf7ef;border:none;border-radius:8px;
+  padding:10px 18px;font-size:13px;cursor:pointer;max-width:420px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.idle-box .go:hover{background:#37855e}
+
 /* ---------- 右键菜单 ---------- */
 .ctxmenu{position:fixed;display:none;background:var(--panel2);border:1px solid var(--line);
   border-radius:9px;padding:5px;min-width:196px;box-shadow:0 14px 36px rgba(0,0,0,.62);z-index:90}
@@ -401,9 +411,27 @@ async function loadView(path) {
 async function renderMap() {
   const inner = $('mapInner');
   const scanning = STATE?.status === 'scanning';
+  const paused = STATE?.status === 'paused';
+
+  // 刚打开、还没扫过：别显示一片空白，告诉用户下一步做什么
+  if (STATE && STATE.status === 'idle') {
+    inner.innerHTML = `<div class="idle-box">
+      <div class="t">先选一个位置</div>
+      <div class="s">上面选磁盘、粘贴路径，或点「浏览…」挑文件夹，然后点「扫描」</div>
+      <button class="go" id="idleScan">扫描 ${esc(STATE.root || '')}</button>
+    </div>`;
+    const go = $('idleScan');
+    if (go) go.onclick = () => $('rescan').click();
+    return;
+  }
+
+  // 扫描开始后要把引导层拆掉：它是直接写进 inner 的，而方块是 appendChild 上去的，
+  // 不主动删就会一直压在上面，形成一层虚影。
+  const staleIdle = inner.querySelector('.idle-box');
+  if (staleIdle) staleIdle.remove();
 
   let kids;
-  if (scanning) {
+  if (scanning) {   // 暂停时沿用已经画出来的方块
     kids = partialChildren(STATE.partial, STATE.root);
   } else {
     if (!CURRENT) { inner.innerHTML = ''; return; }
@@ -639,6 +667,13 @@ async function poll() {
     await renderMap();
   }
 
+  if (STATE.status === 'idle' && !window.__idleShown) {
+    window.__idleShown = true;
+    // 把默认盘符填进路径框，跟引导按钮上的「扫描 C:\」保持一致
+    if (!$('path').value && STATE.root) $('path').value = STATE.root;
+    await renderMap();
+  }
+
   if (STATE.status === 'error') {
     $('scanmsg').textContent = '扫描失败';
     $('scancur').textContent = (STATE.error || '').split('\n')[0];
@@ -790,16 +825,17 @@ async function runClean(dryRun) {
 /* ---------------- 扫描控制 ---------------- */
 async function scanNow(path, depth) {
   window.__scanned = false;
+  window.__idleShown = false;
   CURRENT = null;
   for (const key of Object.keys(VIEW_CACHE)) delete VIEW_CACHE[key];
   document.querySelectorAll('#mapInner .tile').forEach(el => el.remove());
-  try { await API.start_scan(path, depth); } catch (e) { toast('启动扫描失败：' + e.message); }
+  try { await API.start_scan(path, depth || null); } catch (e) { toast('启动扫描失败：' + e.message); }
 }
 
 function doScan(path) {
   SELECTED.clear();
   renderList(); updateSum();
-  scanNow(path, 3);
+  scanNow(path);        // 不传 depth，用后端的默认值（6 层）
 }
 
 async function loadDrives() {
@@ -810,10 +846,12 @@ async function loadDrives() {
   sel.innerHTML = '<option value="">选择磁盘…</option>' + drives.map(d =>
     `<option value="${esc(d.path)}">${esc(d.path.replace(/\\$/,''))} 剩 ${esc(d.free_text)}</option>`
   ).join('');
+  // 只把盘符填进路径框，**不自动扫描**：
+  // WebView2 初始化 <select> 时可能派发一次 change，自动扫会让程序一打开就跑起来。
+  sel.value = '';
   sel.onchange = () => {
     if (!sel.value) return;
     $('path').value = sel.value;
-    doScan(sel.value);
   };
 }
 

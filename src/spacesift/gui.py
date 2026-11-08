@@ -430,6 +430,10 @@ def run(path: str = "", *, depth: int = 6, width: int = 1280, height: int = 820)
         text_select=False,
     )
     api.attach(window)
-    api.state.start_scan(api.state.root)
+
+    # 只有命令行明确给了路径才自动开扫。双击 exe 打开时先让用户自己选：
+    # 没人愿意一开程序就被迫等它把整个 C 盘走一遍。
+    if path:
+        api.state.start_scan(api.state.root)
 
     webview.start(debug=False)
