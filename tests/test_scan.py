@@ -91,3 +91,30 @@ def test_human_size():
     assert human_size(1024 * 1024 * 1.5) == "1.5 MB"
     assert human_size(1024**3) == "1.0 GB"
     assert human_size(-1024) == "-1.0 KB"
+
+
+def test_checkpoint_can_stop_scan_early(tmp_path):
+    """用户点结束后，scan 应该收尾返回部分结果，而不是把扫到的全扔掉。"""
+    for index in range(60):
+        child = tmp_path / ("d%02d" % index)
+        child.mkdir()
+        (child / "payload.bin").write_bytes(b"x" * 64)
+
+    calls = {"n": 0}
+
+    def checkpoint():
+        calls["n"] += 1
+        return calls["n"] < 2      # 第二次检查就要求结束
+
+    result = scan(str(tmp_path), max_depth=2, checkpoint=checkpoint, checkpoint_every=8)
+
+    assert result.interrupted is True
+    assert result.total_files == 0 or result.total_files < 60
+    assert calls["n"] >= 2
+
+
+def test_finished_scan_is_not_marked_interrupted(tmp_path):
+    (tmp_path / "a.txt").write_bytes(b"x" * 32)
+    result = scan(str(tmp_path), max_depth=2, checkpoint=lambda: True, checkpoint_every=8)
+    assert result.interrupted is False
+    assert result.total_files == 1

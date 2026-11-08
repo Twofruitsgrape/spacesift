@@ -54,6 +54,7 @@ class ScanResult:
     #: 读不了的文件/目录个数
     errors: int = 0
     elapsed: float = 0.0
+    interrupted: bool = False   # 被用户中途结束，数据是扫到那一刻的部分结果
 
     def child_sizes(self, parent: str, *, limit: int | None = None) -> list[tuple[str, int]]:
         """返回 ``parent`` 的直接子目录大小，按大到小排序。"""
@@ -105,6 +106,8 @@ def scan(
     progress_every: int = 2000,
     partial: Callable[[dict[str, int]], None] | None = None,
     partial_every: int = 4000,
+    checkpoint: Callable[[], bool] | None = None,
+    checkpoint_every: int = 192,
 ) -> ScanResult:
     """扫描 ``root`` 并返回聚合结果。
 
@@ -125,6 +128,10 @@ def scan(
     partial:
         扫描过程中的增量快照回调，参数是 ``{一级子目录: 已扫到的字节数}``。
         界面用它把方块边扫边画出来（SpaceSniffer 那种生长感），数值只会变大。
+    checkpoint:
+        每 ``checkpoint_every`` 个目录调用一次，返回 ``False`` 表示用户要求结束。
+        点结束不是抛异常，而是**收尾返回已扫到的部分结果**（``interrupted=True``），
+        这样界面上已经长出来的方块和统计都还能用，不会白扫。
     """
     root = os.path.abspath(root)
     started = time.perf_counter()
@@ -163,7 +170,11 @@ def scan(
     visited = 0
     stack: list[str] = [root]
 
+    interrupted = False
     while stack:
+        if checkpoint is not None and visited % checkpoint_every == 0 and not checkpoint():
+            interrupted = True
+            break
         current = stack.pop()
         visited += 1
         if progress is not None and visited % progress_every == 0:
@@ -233,6 +244,7 @@ def scan(
         top_files=top,
         errors=errors,
         elapsed=time.perf_counter() - started,
+        interrupted=interrupted,
     )
 
 

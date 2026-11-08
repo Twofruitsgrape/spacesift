@@ -67,10 +67,11 @@ class GuiState:
 
     root: str = ""
     depth: int = 3
-    status: str = "idle"          # idle | scanning | done | error
+    status: str = "idle"          # idle | scanning | paused | done | error
     visited: int = 0
     current: str = ""
     error: str = ""
+    stopping: bool = False        # 用户点了结束，worker 正在收尾
 
     result: ScanResult | None = None
     findings: list = field(default_factory=list)
@@ -79,6 +80,8 @@ class GuiState:
 
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _thread: threading.Thread | None = field(default=None, repr=False)
+    _paused: bool = field(default=False, repr=False)
+    _stopped: bool = field(default=False, repr=False)
 
     # ---------------------------------------------------------------- 扫描
 
@@ -91,7 +94,7 @@ class GuiState:
             return
 
         with self._lock:
-            if self.status == "scanning":
+            if self.status in ("scanning", "paused"):
                 return
             self.root = target
             if depth:
@@ -102,9 +105,49 @@ class GuiState:
             self.error = ""
             self.partial = {}
             self.result = None
+            self.stopping = False
+            self._paused = False
+            self._stopped = False
 
         self._thread = threading.Thread(target=self._worker, name="spacesift-scan", daemon=True)
         self._thread.start()
+
+    def _gate(self) -> bool:
+        """扫描的节流阀：暂停时在这里原地等，返回 False 表示要收尾。"""
+        while True:
+            with self._lock:
+                if self._stopped:
+                    return False
+                paused = self._paused
+            if not paused:
+                return True
+            time.sleep(0.08)
+
+    def pause_scan(self) -> dict[str, Any]:
+        with self._lock:
+            if self.status != "scanning":
+                return {"ok": False, "status": self.status}
+            self._paused = True
+            self.status = "paused"
+        return {"ok": True, "status": "paused"}
+
+    def resume_scan(self) -> dict[str, Any]:
+        with self._lock:
+            if self.status != "paused":
+                return {"ok": False, "status": self.status}
+            self._paused = False
+            self.status = "scanning"
+        return {"ok": True, "status": "scanning"}
+
+    def stop_scan(self) -> dict[str, Any]:
+        """结束扫描：不是扔异常，而是让 scan 收尾返回已扫到的部分结果。"""
+        with self._lock:
+            if self.status not in ("scanning", "paused"):
+                return {"ok": False, "status": self.status}
+            self._stopped = True
+            self._paused = False      # 暂停中也能立刻结束
+            self.stopping = True
+        return {"ok": True, "status": "stopping"}
 
     def _worker(self) -> None:
         try:
@@ -123,6 +166,7 @@ class GuiState:
                 top_files=80,
                 progress=on_progress,
                 partial=on_partial,
+                checkpoint=self._gate,
             )
             findings = detect_all()
             opportunities = build_opportunities(result, findings)
@@ -131,9 +175,11 @@ class GuiState:
                 self.findings = findings
                 self.opportunities = opportunities
                 self.status = "done"
+                self.stopping = False      # 收尾完成，别让「正在结束…」留在界面上
         except Exception as exc:  # noqa: BLE001 - 界面要显示原因
             with self._lock:
                 self.status = "error"
+                self.stopping = False
                 self.error = f"{exc}\n{traceback.format_exc(limit=2)}"
 
     # ---------------------------------------------------------------- 快照
@@ -142,6 +188,7 @@ class GuiState:
         with self._lock:
             payload: dict[str, Any] = {
                 "status": self.status,
+                "stopping": self.stopping,
                 "visited": self.visited,
                 "current": self.current,
                 "error": self.error,
@@ -170,6 +217,7 @@ class GuiState:
                     "dirs": len(result.dirs),
                     "errors": result.errors,
                     "elapsed": round(result.elapsed, 1),
+                    "interrupted": result.interrupted,
                     # 只带浅层的一份做兜底（浏览器版用它离线渲染）；
                     # 原生窗口下钻走 get_children，不需要整棵树。
                     "tree": {
@@ -287,6 +335,15 @@ class Api:
 
     def get_state(self) -> dict[str, Any]:
         return self.state.snapshot()
+
+    def pause_scan(self) -> dict[str, Any]:
+        return self.state.pause_scan()
+
+    def resume_scan(self) -> dict[str, Any]:
+        return self.state.resume_scan()
+
+    def stop_scan(self) -> dict[str, Any]:
+        return self.state.stop_scan()
 
     def get_children(self, path: str) -> dict[str, Any]:
         """返回某个目录的**直接**子目录（从已扫描结果里切片）。

@@ -131,6 +131,8 @@ footer .sum b{color:var(--accent);font-size:15px;font-family:ui-monospace,Consol
   opacity:0;transform:translateY(-8px);transition:.25s;pointer-events:none;max-width:420px;
   box-shadow:0 8px 24px rgba(0,0,0,.45)}
 .toast.on{opacity:1;transform:translateY(0)}
+.scanpill.paused{background:rgba(224,179,65,.13);color:#e0b341}
+.scanpill.paused .dotpulse{animation:none;background:#e0b341}
 
 /* ---------- 右键菜单 ---------- */
 .ctxmenu{position:fixed;display:none;background:var(--panel2);border:1px solid var(--line);
@@ -158,6 +160,8 @@ footer .sum b{color:var(--accent);font-size:15px;font-family:ui-monospace,Consol
     <input id="path" type="text" spellcheck="false" placeholder="C:\ 或 C:\Users\me">
     <button id="browse" title="浏览文件夹">浏览…</button>
     <button id="rescan">扫描</button>
+    <button id="pause" style="display:none" title="暂停扫描（随时可以继续）">暂停</button>
+    <button id="stop" class="ghost" style="display:none" title="结束扫描，保留已经扫到的结果">结束</button>
   </div>
   <div class="diskbar" id="diskbar">
     <div class="track"><div class="fill" id="fill" style="width:0%"></div></div>
@@ -250,6 +254,18 @@ const API = {
   },
   async open_scan(path) {
     if (isNative()) return window.pywebview.api.open_scan(path);
+    return { ok: false };
+  },
+  async pause_scan() {
+    if (isNative()) return window.pywebview.api.pause_scan();
+    return { ok: false };
+  },
+  async resume_scan() {
+    if (isNative()) return window.pywebview.api.resume_scan();
+    return { ok: false };
+  },
+  async stop_scan() {
+    if (isNative()) return window.pywebview.api.stop_scan();
     return { ok: false };
   }
 };
@@ -597,15 +613,29 @@ async function poll() {
   renderDisk();
 
   const scanning = STATE.status === 'scanning';
+  const paused = STATE.status === 'paused';
+  const running = scanning || paused;
+  const stopping = !!STATE.stopping;
+
+  // 跑的时候给「暂停/继续 + 结束」，停下来才给「扫描」
+  $('rescan').style.display = running ? 'none' : '';
+  $('pause').style.display = running ? '' : 'none';
+  $('stop').style.display = running ? '' : 'none';
+  $('pause').textContent = paused ? '继续' : '暂停';
+  $('stop').disabled = stopping;
+  $('stop').textContent = stopping ? '正在结束…' : '结束';
+
   // 有方块之后就不再遮住画面：让人看着方块长大，而不是盯一个 spinner
   const hasTiles = document.querySelectorAll('#mapInner .tile').length > 0;
-  $('scanning').style.display = (scanning && !hasTiles) ? 'flex' : 'none';
+  $('scanning').style.display = (running && !hasTiles) ? 'flex' : 'none';
 
-  if (scanning) {
-    $('scanmsg').textContent = `正在扫描 · ${STATE.visited.toLocaleString()} 个目录`;
+  if (running) {
+    const phase = paused ? '已暂停' : (stopping ? '正在结束' : '扫描中');
+    $('scanmsg').textContent = `${phase} · ${STATE.visited.toLocaleString()} 个目录`;
     $('scancur').textContent = STATE.current || '';
-    $('bread').innerHTML = `<span class="scanpill"><span class="dotpulse"></span>`
-      + `扫描中 · ${STATE.visited.toLocaleString()} 个目录 · ${STATE.current ? esc(STATE.current) : ''}</span>`;
+    $('bread').innerHTML = `<span class="scanpill${paused ? ' paused' : ''}"><span class="dotpulse"></span>`
+      + `${phase} · ${STATE.visited.toLocaleString()} 个目录`
+      + (STATE.current ? ` · ${esc(STATE.current)}` : '') + `</span>`;
     await renderMap();
   }
 
@@ -627,11 +657,13 @@ async function poll() {
     const s = STATE.scan;
     if (s && !window.__scanned) {
       window.__scanned = true;
-      toast(`扫描完成 · ${s.total_text} · ${s.files.toLocaleString()} 个文件 · ${s.elapsed}s`);
+      toast(s.interrupted
+        ? `扫描已结束 · 下面的结果是扫到 ${s.total_text} 那一刻的部分数据`
+        : `扫描完成 · ${s.total_text} · ${s.files.toLocaleString()} 个文件 · ${s.elapsed}s`);
     }
   }
 
-  pollTimer = setTimeout(poll, scanning ? 350 : 1500);
+  pollTimer = setTimeout(poll, scanning ? 350 : (paused ? 800 : 1500));
 }
 
 function toast(msg, ms) {
@@ -804,6 +836,17 @@ $('selSafe').onclick = () => {
   renderList(); updateSum();
 };
 $('selNone').onclick = () => { SELECTED.clear(); renderList(); updateSum(); };
+$('pause').onclick = async () => {
+  const isPaused = STATE?.status === 'paused';
+  const result = await (isPaused ? API.resume_scan() : API.pause_scan());
+  if (!result || !result.ok) toast(isPaused ? '现在没有可继续的扫描' : '现在没有正在进行的扫描');
+  poll();
+};
+$('stop').onclick = async () => {
+  const result = await API.stop_scan();
+  if (!result || !result.ok) toast('现在没有正在进行的扫描');
+  poll();
+};
 $('dry').onclick = () => doClean(true);
 $('run').onclick = () => doClean(false);
 window.addEventListener('resize', () => { renderMap().catch(() => {}); });
