@@ -156,6 +156,8 @@ footer .sum b{color:var(--accent);font-size:15px;font-family:ui-monospace,Consol
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px}
 
 /* ---------- 右栏范围提示 ---------- */
+label.row{cursor:default}
+label.row:hover{background:rgba(255,255,255,.03)}
 .scope{padding:9px 16px 7px;color:#6e7681;font-size:11.5px;letter-spacing:.02em;
   border-bottom:1px solid var(--line);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .empty{padding:24px 16px}
@@ -690,6 +692,18 @@ function renderList() {
       updateSum();
     };
   });
+
+  // 右栏每一项也能右键打开所在位置（比如看一眼 hiberfil.sys 到底在哪）
+  list.querySelectorAll('label.row').forEach(el => {
+    const box = el.querySelector('input[data-id]');
+    const row = rows.find(item => item.id === (box && box.dataset.id));
+    const target = row && row.paths && row.paths.length ? row.paths[0] : '';
+    if (!target) return;
+    el.oncontextmenu = (event) => openContextMenu(event, {
+      path: target, name: row.title, size: row.size, isFile: false,
+    });
+  });
+
   syncSelectButtons();
 }
 
@@ -853,7 +867,7 @@ function openContextMenu(event, info) {
 
   menu.innerHTML =
     `<div class="hint" title="${esc(info.path)}">${esc(info.path)}</div><div class="sep"></div>` +
-    `<button data-act="reveal">${isFile ? '打开所在文件夹并选中' : '在资源管理器中打开'}</button>` +
+    `<button data-act="reveal">打开所在位置</button>` +
     `<button data-act="copy">复制路径</button>` +
     (isFile ? '' : '<div class="sep"></div><button data-act="scan">从这里开始扫描</button>');
 
