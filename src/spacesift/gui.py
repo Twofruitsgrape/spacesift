@@ -23,6 +23,7 @@ import webview
 
 from .analyze import CATEGORY_ARCHIVE, Opportunity, build_opportunities, totals_by_category
 from .clean import clean_findings
+from . import indexer
 from .migrate import execute as migrate_execute
 from .migrate import free_space, human_size as migrate_size, plan as migrate_plan
 from .report import disk_info
@@ -33,6 +34,11 @@ from .scan import ScanResult, human_size, scan
 _UI_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui.html")
 
 APP_NAME = "SpaceSift"
+
+
+def data_dir() -> str:
+    """索引和缓存放这里（实现见 indexer.data_dir）。"""
+    return indexer.data_dir()
 
 
 def ui_html() -> str:
@@ -198,6 +204,12 @@ class GuiState:
     migrate_message: str = ""
     migrate_failed: list = field(default_factory=list)
 
+    # 文件名索引（用来做秒级搜索）
+    index_status: str = "idle"     # idle | building | ready | error
+    index_root: str = ""
+    index_files: int = 0
+    index_message: str = ""
+
     result: ScanResult | None = None
     findings: list = field(default_factory=list)
     opportunities: list[Opportunity] = field(default_factory=list)
@@ -208,6 +220,8 @@ class GuiState:
     _paused: bool = field(default=False, repr=False)
     _stopped: bool = field(default=False, repr=False)
     _migrate_stop: bool = field(default=False, repr=False)
+    _index_stop: bool = field(default=False, repr=False)
+    _index_thread: threading.Thread | None = field(default=None, repr=False)
     _migrate_thread: threading.Thread | None = field(default=None, repr=False)
 
     # ---------------------------------------------------------------- 扫描
@@ -308,6 +322,91 @@ class GuiState:
                 self.status = "error"
                 self.stopping = False
                 self.error = f"{exc}\n{traceback.format_exc(limit=2)}"
+
+    # ---------------------------------------------------------------- 搜索
+
+    def _index_db(self, root: str) -> str:
+        return indexer.index_path(data_dir(), root)
+
+    def start_index(self, root: str = "") -> dict[str, Any]:
+        """为 ``root`` 建文件名索引。已经建过且不太旧就直接用。"""
+        target = os.path.abspath(root or self.root or os.path.abspath(os.sep))
+        db = self._index_db(target)
+
+        with self._lock:
+            if self.index_status == "building":
+                return {"ok": True, "already": True, "status": "building"}
+
+            if indexer.is_fresh(db, target):
+                total = indexer.count(db)
+                self.index_status = "ready"
+                self.index_root = target
+                self.index_files = total
+                self.index_message = f"索引已就绪 · {total:,} 个文件"
+                return {"ok": True, "cached": True, "count": total}
+
+            self.index_status = "building"
+            self.index_root = target
+            self.index_files = 0
+            self.index_message = "正在建立索引…"
+            self._index_stop = False
+
+        self._index_thread = threading.Thread(
+            target=self._index_worker, args=(target, db), name="spacesift-index", daemon=True,
+        )
+        self._index_thread.start()
+        return {"ok": True, "started": True, "root": target}
+
+    def stop_index(self) -> dict[str, Any]:
+        with self._lock:
+            if self.index_status != "building":
+                return {"ok": False}
+            self._index_stop = True
+        return {"ok": True}
+
+    def _index_worker(self, root: str, db: str) -> None:
+        def on_progress(seen: int, current: str) -> None:
+            with self._lock:
+                self.index_files = seen
+                self.index_message = f"正在建立索引 · {seen:,} 个文件 · {current}"
+
+        def should_stop() -> bool:
+            with self._lock:
+                return self._index_stop
+
+        try:
+            report = indexer.build(root, db, progress=on_progress, should_stop=should_stop)
+            with self._lock:
+                self.index_status = "ready"
+                self.index_files = report.files
+                self.index_message = report.summary()
+        except Exception as exc:  # noqa: BLE001 - 界面要显示原因
+            with self._lock:
+                self.index_status = "error"
+                self.index_message = f"索引失败：{exc}"
+
+    def search(self, query: str, ext: str = "") -> dict[str, Any]:
+        """按文件名搜。索引没建过就顺手起一个，并告诉前端正在建。"""
+        root = self.root or os.path.abspath(os.sep)
+        db = self._index_db(root)
+
+        if not os.path.exists(db):
+            self.start_index(root)
+            return {"ok": True, "indexing": True, "status": self.index_status,
+                    "message": "第一次搜索要先建立索引，稍等一下（之后就是即时的）"}
+
+        hits = indexer.search(db, query, ext=ext, limit=400)
+        return {
+            "ok": True,
+            "indexing": self.index_status == "building",
+            "hits": [
+                {"path": hit.path, "name": hit.name, "size": hit.size,
+                 "text": human_size(hit.size), "is_dir": hit.is_dir}
+                for hit in hits
+            ],
+            "count": len(hits),
+            "total": indexer.count(db),
+        }
 
     # ---------------------------------------------------------------- 归档
 
@@ -457,6 +556,12 @@ class GuiState:
                     }
                     for row in self.opportunities
                 ]
+                payload["index"] = {
+                    "status": self.index_status,
+                    "root": self.index_root,
+                    "files": self.index_files,
+                    "message": self.index_message,
+                }
                 payload["migrate"] = {
                     "status": self.migrate_status,
                     "total": self.migrate_total,
@@ -554,6 +659,15 @@ class Api:
         except OSError:
             return False
         return False
+
+    def start_index(self, root: str = "") -> dict[str, Any]:
+        return self.state.start_index(root)
+
+    def stop_index(self) -> dict[str, Any]:
+        return self.state.stop_index()
+
+    def search(self, query: str, ext: str = "") -> dict[str, Any]:
+        return self.state.search(query, ext)
 
     def trash(self, paths: list[str]) -> dict[str, Any]:
         """把指定路径移入回收站（可恢复）。深度清理模式用。

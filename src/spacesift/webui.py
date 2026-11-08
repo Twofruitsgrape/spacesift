@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from . import indexer
 from .analyze import Opportunity, build_opportunities, totals_by_category
 from .clean import clean_findings
 from .report import disk_info
@@ -274,6 +275,33 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json({"error": "not found"}, 404)
 
+    def _search(self, query: str, ext: str = "") -> dict:
+        """浏览器模式的搜索：和桌面版共用同一套 SQLite 索引。"""
+        root = getattr(self.app, "root", "") or ""
+        if not root:
+            return {"ok": True, "indexing": True, "message": "先扫描一个目录"}
+
+        db = indexer.index_path(indexer.data_dir(), root)
+        if not os.path.exists(db):
+            if not getattr(self.app, "_index_building", False):
+                self.app._index_building = True
+                threading.Thread(target=indexer.build, args=(root, db), daemon=True).start()
+            return {"ok": True, "indexing": True,
+                    "message": "第一次搜索要先建立索引，稍等一下（之后就是即时的）"}
+
+        hits = indexer.search(db, query, ext=ext, limit=400)
+        return {
+            "ok": True,
+            "indexing": False,
+            "hits": [
+                {"path": hit.path, "name": hit.name, "size": hit.size,
+                 "text": human_size(hit.size), "is_dir": hit.is_dir}
+                for hit in hits
+            ],
+            "count": len(hits),
+            "total": indexer.count(db),
+        }
+
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
@@ -282,6 +310,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         body = self._body()
+
+        if parsed.path == "/api/search":
+            self._json(self._search(body.get("query") or "", body.get("ext") or ""))
+            return
 
         if parsed.path == "/api/scan":
             self.app.start_scan(body.get("path"), body.get("depth"))

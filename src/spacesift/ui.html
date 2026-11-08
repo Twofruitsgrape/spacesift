@@ -202,6 +202,14 @@ label.row:hover{background:rgba(255,255,255,.03)}
 .fl-size{color:var(--accent);white-space:nowrap;font-variant-numeric:tabular-nums}
 
 button.ghost:disabled{opacity:.4;cursor:not-allowed}
+
+/* 搜索框 */
+.search{flex:0 1 240px;background:rgba(255,255,255,.05);border:1px solid var(--line);
+  border-radius:8px;color:var(--fg);font-size:13px;padding:8px 12px;outline:none;min-width:120px}
+.search:focus{border-color:#3d4a63;background:rgba(255,255,255,.08)}
+.search::placeholder{color:#6e7681}
+.idx-status{font-size:11.5px;color:#6e7681;max-width:240px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 button.primary.danger{background:#7f2f33}
 button.primary.danger:hover{background:#9c3a3f}
 </style>
@@ -215,6 +223,8 @@ button.primary.danger:hover{background:#9c3a3f}
     <input id="path" type="text" spellcheck="false" placeholder="C:\ 或 C:\Users\me">
     <button id="browse" title="浏览文件夹">浏览…</button>
     <button id="rescan">扫描</button>
+    <input id="search" class="search" type="text" placeholder="搜索文件…" spellcheck="false" autocomplete="off">
+    <span class="idx-status" id="idxStatus"></span>
     <button id="pause" style="display:none" title="暂停扫描（随时可以继续）">暂停</button>
     <button id="stop" class="ghost" style="display:none" title="结束扫描，保留已经扫到的结果">结束</button>
   </div>
@@ -327,6 +337,23 @@ const API = {
   },
   async stop_scan() {
     if (isNative()) return window.pywebview.api.stop_scan();
+    return { ok: false };
+  },
+  async search(query, ext) {
+    if (isNative()) return window.pywebview.api.search(query, ext || '');
+    try {
+      const response = await fetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Token': TOKEN },
+        body: JSON.stringify({ query: query || '', ext: ext || '' }),
+      });
+      return await response.json();
+    } catch (e) {
+      return { ok: false, hits: [], message: '搜索失败：' + e.message };
+    }
+  },
+  async start_index(root) {
+    if (isNative()) return window.pywebview.api.start_index(root || '');
     return { ok: false };
   },
   async trash(paths) {
@@ -654,6 +681,75 @@ const CAT_HELP = {
   manual:'系统功能或你的个人文件，工具永远不动。'
 };
 
+/* ---------------- 搜索 ---------------- */
+let SEARCH_MODE = false;
+let SEARCH_RESULTS = [];
+
+async function runSearch(queryText) {
+  const query = (queryText || '').trim();
+  const list = $('list');
+  if (!query) {
+    SEARCH_MODE = false;
+    SEARCH_RESULTS = [];
+    renderList();
+    return;
+  }
+
+  SEARCH_MODE = true;
+  list.innerHTML = '<div style="padding:16px;color:var(--muted);font-size:13px">搜索中…</div>';
+
+  let res = null;
+  try {
+    res = await API.search(query);
+  } catch (e) {
+    list.innerHTML = '<div style="padding:16px;color:#c96;font-size:13px">搜索失败：' + esc(e.message) + '</div>';
+    return;
+  }
+  if (!res) { list.innerHTML = ''; return; }
+
+  if (res.indexing || res.message) {
+    SEARCH_MODE = false;   // 还在建索引，先不接管右栏
+    list.innerHTML = `<div class="empty">
+      <div style="font-size:13px;color:var(--muted)">${esc(res.message || '正在建立索引…')}</div>
+      <div style="font-size:12px;color:#6e7681;margin-top:8px;line-height:1.7">
+        索引建好后搜索是即时的（类似 Everything）。<br>窗口可以继续用，扫描、下钻都不受影响。</div>
+    </div>`;
+    return;
+  }
+
+  SEARCH_RESULTS = res.hits || [];
+  renderSearchResults(query, res.total || 0);
+}
+
+function renderSearchResults(query, total) {
+  const list = $('list');
+  if (!SEARCH_RESULTS.length) {
+    list.innerHTML = `<div class="scope">搜索 · ${esc(query)}　没有匹配的文件</div>`;
+    return;
+  }
+
+  const sum = SEARCH_RESULTS.reduce((acc, item) => acc + item.size, 0);
+  let out = `<div class="scope">搜索 · ${esc(query)}　命中 ${SEARCH_RESULTS.length} 项`
+    + (total > SEARCH_RESULTS.length ? `（索引里共 ${total.toLocaleString()} 项）` : '')
+    + `　合计 ${fmt(sum)}</div>`;
+
+  for (const item of SEARCH_RESULTS) {
+    const kind = item.is_dir ? 'dir' : 'is-file';
+    out += `<div class="deep-row ${kind}" data-path="${esc(item.path)}">
+      <span class="dr-name" title="${esc(item.path)}">${esc(item.path)}</span>
+      <span class="dr-size">${esc(item.text)}</span></div>`;
+  }
+  list.innerHTML = out;
+
+  list.querySelectorAll('.deep-row').forEach(el => {
+    const item = SEARCH_RESULTS.find(row => row.path === el.dataset.path);
+    if (!item) return;
+    el.oncontextmenu = (event) => openContextMenu(event, {
+      path: item.path, name: item.name, size: item.size, isFile: !item.is_dir,
+    });
+  });
+}
+
 /* ---------------- 清理模式：推荐 / 深度 ---------------- */
 let MODE = 'recommend';      // recommend | deep
 const DEEP_CACHE = {};
@@ -785,6 +881,7 @@ function scopedRows() {
 }
 
 function renderList() {
+  if (SEARCH_MODE) return;      // 搜索结果显示中，别被模式切换覆盖
   syncModeChrome();
   if (MODE === 'deep') {
     renderDeepList().catch(() => {});
@@ -957,6 +1054,17 @@ async function poll() {
       + `${phase} · ${STATE.visited.toLocaleString()} 个目录`
       + (STATE.current ? ` · ${esc(STATE.current)}` : '') + `</span>`;
     await renderMap();
+  }
+
+  const idx = STATE.index;
+  if (idx) {
+    if (idx.status === 'building') {
+      $('idxStatus').textContent = idx.message || '正在建立索引…';
+    } else if (idx.status === 'ready' && SEARCH_MODE) {
+      $('idxStatus').textContent = `索引 ${idx.files.toLocaleString()} 项`;
+    } else {
+      $('idxStatus').textContent = '';
+    }
   }
 
   const mig = STATE.migrate;
@@ -1269,6 +1377,16 @@ $('stop').onclick = async () => {
   if (!result || !result.ok) toast('现在没有正在进行的扫描');
   poll();
 };
+let searchTimer = null;
+$('search').oninput = () => {
+  clearTimeout(searchTimer);
+  const value = $('search').value;
+  searchTimer = setTimeout(() => runSearch(value).catch(() => {}), 350);
+};
+$('search').onkeydown = (event) => {
+  if (event.key === 'Escape') { $('search').value = ''; runSearch('').catch(() => {}); }
+};
+
 document.querySelectorAll('.mode-tabs .tab').forEach(btn => {
   btn.onclick = () => {
     MODE = btn.dataset.mode;
