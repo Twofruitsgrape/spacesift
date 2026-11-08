@@ -28,29 +28,6 @@ def test_reveal_rejects_missing_path(tmp_path):
     assert api.reveal(str(tmp_path / "根本不存在的目录")) is False
 
 
-def test_file_group_block_carries_its_real_directory(tmp_path):
-    keep = tmp_path / "sub"
-    keep.mkdir()
-    (keep / "big.bin").write_bytes(b"x" * 128)
-    (tmp_path / "loose.bin").write_bytes(b"y" * 256)   # 根目录里的散落文件
-
-    state = GuiState()
-    state.result = ScanResult(
-        root=str(tmp_path),
-        dirs={str(tmp_path): 384, str(keep): 128},
-    )
-    api = Api()
-    api.state = state
-
-    view = api.get_children(str(tmp_path))
-    groups = [row for row in view["dirs"] if row.get("file_group")]
-
-    assert len(groups) == 1
-    assert groups[0]["path"] == str(tmp_path), "聚合块必须带上所属目录，不能是空串"
-    assert groups[0]["size"] == 256
-    assert "1 个文件" in groups[0]["name"]
-
-
 def test_leaf_files_carry_full_path(tmp_path):
     target = tmp_path / "leaf"
     target.mkdir()
@@ -107,3 +84,60 @@ def test_set_clipboard_roundtrip():
     marker = "SpaceSift 剪贴板自检 / path: C:\\Users\\x\\a b\\c.log"
     assert set_clipboard(marker) is True
     assert _read_clipboard() == marker
+
+
+def test_loose_files_are_listed_one_by_one(tmp_path):
+    """目录里散落的文件要逐个显示，不能糊成一个「（N 个文件）」。"""
+    for name in ("alpha", "beta"):
+        (tmp_path / name).mkdir()
+    made = []
+    for index in range(8):
+        target = tmp_path / ("loose%02d.bin" % index)
+        target.write_bytes(b"x" * (100 * (index + 1)))
+        made.append(target.name)
+
+    state = GuiState()
+    state.result = ScanResult(
+        root=str(tmp_path),
+        dirs={str(tmp_path): 5000, str(tmp_path / "alpha"): 200, str(tmp_path / "beta"): 200},
+    )
+    api = Api()
+    api.state = state
+
+    view = api.get_children(str(tmp_path))
+    names = [row["name"] for row in view["dirs"]]
+
+    for name in made:
+        assert name in names, "每个散落文件都该有自己的方块"
+    assert not any("个文件" in name for name in names), "不该再出现聚合灰块"
+
+    files = [row for row in view["dirs"] if row.get("is_file")]
+    assert len(files) == 8
+    assert all(os.path.isabs(row["path"]) for row in files)
+
+
+def test_many_files_fall_back_to_group_with_remainder(tmp_path):
+    """超过 200 个文件时，多出来的零碎用一个块兜住，保证面积对得上。"""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    for index in range(205):
+        (tmp_path / ("f%03d.bin" % index)).write_bytes(b"x" * 10)
+
+    state = GuiState()
+    state.result = ScanResult(
+        root=str(tmp_path),
+        dirs={str(tmp_path): 2550, str(sub): 500},   # 有子目录才会走 dirs 分支
+    )
+    api = Api()
+    api.state = state
+
+    view = api.get_children(str(tmp_path))
+    rows = view["dirs"]
+
+    listed = [row for row in rows if row.get("is_file")]
+    groups = [row for row in rows if row.get("file_group")]
+    assert len(listed) == 200
+    assert len(groups) == 1
+    assert "较小文件" in groups[0]["name"]
+    assert groups[0]["path"] == str(tmp_path), "兜底聚合块也要带真实目录"
+    assert sum(row["size"] for row in rows) == 2550, "面积必须守恒"

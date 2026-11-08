@@ -453,7 +453,10 @@ async function renderMap() {
     if (!CURRENT) { inner.innerHTML = ''; return; }
     const view = await loadView(CURRENT);
     kids = (view.dirs || []).map(d => ({
-      path: d.path, name: d.name, size: d.size, isFile: !!d.file_group
+      // is_file: 散落在目录里的单个文件；file_group: 文件太多时的兜底聚合块。
+      // 两者都不可下钻，但都能右键「打开位置 / 复制路径」。
+      path: d.path, name: d.name, size: d.size,
+      isFile: !!(d.is_file || d.file_group)
     }));
     if (!kids.length) {
       // 没有子目录了：列文件，这里是下钻的终点

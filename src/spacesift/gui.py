@@ -571,16 +571,25 @@ class Api:
         rows.sort(key=lambda row: row["size"], reverse=True)
 
         if rows:
-            # 有子目录也有散落文件：把文件聚成一块，否则方块图面积对不上
-            # （根目录的 pagefile.sys、hiberfil.sys 这类大文件会凭空消失）。
+            # 子目录之外还散落着文件：逐个列出来当成方块（灰色、不可下钻）。
+            # 聚成一个「（N 个文件）」的灰块太笼统 —— 用户想知道到底是哪几个。
             file_bytes, file_count = self._direct_files(path)
-            if file_bytes:
-                rows.append({
-                    # 这里必须给真实目录：给空串的话 os.path.abspath("") 会变成
-                    # 程序的当前工作目录，右键「打开位置」就跳去 exe 所在文件夹了。
-                    "path": base, "name": f"（{file_count} 个文件）", "size": file_bytes,
-                    "text": human_size(file_bytes), "file_group": True,
-                })
+            if file_count:
+                listed = self.list_files(path)      # 最多 200 个，按大小排好
+                for item in listed:
+                    rows.append({
+                        "path": item["path"], "name": item["name"],
+                        "size": item["size"], "text": item["text"], "is_file": True,
+                    })
+                # 超过 200 个时，剩下的零碎用一个块兜住，保证面积守恒
+                if file_count > len(listed):
+                    rest_bytes = max(0, file_bytes - sum(item["size"] for item in listed))
+                    if rest_bytes:
+                        rows.append({
+                            "path": base, "name": f"（还有 {file_count - len(listed)} 个较小文件）",
+                            "size": rest_bytes, "text": human_size(rest_bytes),
+                            "file_group": True,
+                        })
                 rows.sort(key=lambda row: row["size"], reverse=True)
             return {"dirs": rows, "files": []}
 
