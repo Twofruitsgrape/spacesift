@@ -172,6 +172,8 @@ footer .sum b{color:var(--accent);font-size:15px;font-family:ui-monospace,Consol
 .filelist{max-height:46vh;overflow:auto;margin:10px 0;border-top:1px solid var(--line)}
 .fl-row{display:flex;justify-content:space-between;gap:14px;padding:6px 2px;
   border-bottom:1px solid rgba(255,255,255,.05);font-size:12.5px}
+.fl-row{cursor:context-menu}
+.fl-row:hover{background:rgba(255,255,255,.045)}
 .fl-row.is-file .fl-name{color:#9aa4b5}
 .fl-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .fl-size{color:var(--accent);white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -571,15 +573,23 @@ function showFullList(kids) {
   const total = rows.reduce((acc, item) => acc + item.size, 0);
   const html = `<h3>${esc(CURRENT || '')} 下的全部 ${rows.length} 项</h3>
     <p style="color:#8b93a7;font-size:12.5px">合计 ${fmt(total)}　按大小排序</p>
-    <div class="filelist">${rows.map(item => `
-      <div class="fl-row${item.isFile ? ' is-file' : ''}">
+    <div class="filelist">${rows.map((item, index) => `
+      <div class="fl-row${item.isFile ? ' is-file' : ''}" data-i="${index}">
         <span class="fl-name" title="${esc(item.path)}">${esc(item.name)}</span>
         <span class="fl-size">${fmt(item.size)}</span>
       </div>`).join('')}</div>
-    <div class="actions"><button class="primary" id="cx">关闭</button></div>`;
+    <div class="actions"><button class="ghost" id="cx">关闭</button></div>`;
   $('card').innerHTML = html;
   $('overlay').classList.add('on');
   $('cx').onclick = () => $('overlay').classList.remove('on');
+
+  // 清单里每一行也能右键：打开所在位置 / 复制路径 / 从这里开始扫描
+  $('card').querySelectorAll('.fl-row').forEach(el => {
+    el.oncontextmenu = (event) => {
+      const info = rows[Number(el.dataset.i)];
+      if (info) openContextMenu(event, info);
+    };
+  });
 }
 
 function renderBread() {
