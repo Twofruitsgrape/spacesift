@@ -204,9 +204,10 @@ button.ghost:disabled{opacity:.4;cursor:not-allowed}
     </div>
     <div id="list"></div>
     <footer>
-      <div class="sum">已选 <b id="sum">0 B</b> · <span id="cnt">0 项</span></div>
-      <button id="dry">演练</button>
+      <div class="sum">已选 <b id="sum">0 B</b> · <span id="cnt">0 项</span><span id="migsum"></span></div>
       <button class="primary" id="run">清理选中项</button>
+      <button class="primary archive" id="archiveItem" style="display:none">归档选中项</button>
+      <button id="stopArchive" style="display:none">停止归档</button>
     </footer>
   </section>
 </main>
@@ -278,6 +279,14 @@ const API = {
   },
   async stop_scan() {
     if (isNative()) return window.pywebview.api.stop_scan();
+    return { ok: false };
+  },
+  async start_migrate(ids, target) {
+    if (isNative()) return window.pywebview.api.start_migrate(ids, target);
+    return { ok: false, error: '归档只能在桌面版里用' };
+  },
+  async stop_migrate() {
+    if (isNative()) return window.pywebview.api.stop_migrate();
     return { ok: false };
   }
 };
@@ -594,7 +603,8 @@ function renderList() {
     html += `<div class="group"><h3><span class="dot ${cat}"></span>${CAT_LABEL[cat]} · ${fmt(total)}</h3>`;
     html += `<div style="padding:0 16px 8px;color:#6e7681;font-size:11.5px">${CAT_HELP[cat]}</div>`;
     for (const it of items) {
-      const selectable = cat === 'junk' || cat === 'review';
+      // 归档项也能勾 —— 勾了是「搬走」，不是「删掉」
+      const selectable = cat === 'junk' || cat === 'review' || cat === 'archive';
       const checked = SELECTED.has(it.id);
       html += `<label class="row ${selectable?'':'disabled'}">
         <input type="checkbox" data-id="${esc(it.id)}" ${selectable?'':'disabled'} ${checked?'checked':''}>
@@ -635,12 +645,29 @@ function syncSelectButtons() {
 
 function updateSum() {
   const rows = STATE?.opportunities || [];
-  let bytes = 0, n = 0;
-  for (const r of rows) if (SELECTED.has(r.id)) { bytes += r.size; n++; }
-  $('sum').textContent = fmt(bytes);
-  $('cnt').textContent = n + ' 项';
-  $('run').disabled = n === 0;
-  $('dry').disabled = n === 0;
+  let cleanBytes = 0, cleanCount = 0, archBytes = 0, archCount = 0;
+  for (const r of rows) {
+    if (!SELECTED.has(r.id)) continue;
+    if (r.category === 'archive') { archBytes += r.size; archCount++; }
+    else { cleanBytes += r.size; cleanCount++; }
+  }
+
+  const total = cleanBytes + archBytes;
+  $('sum').textContent = fmt(total);
+  $('cnt').textContent = (cleanCount + archCount) + ' 项';
+
+  // 清理只对 junk/review 生效，归档单独一个按钮 —— 混着来最容易误删
+  $('run').disabled = cleanCount === 0;
+
+  $('run').title = cleanCount ? `清理 ${cleanCount} 项缓存/临时文件` : '没有勾选可清理的项';
+
+  const archBtn = $('archiveItem');
+  const running = STATE?.migrate?.status === 'running';
+  archBtn.style.display = archCount ? '' : 'none';
+  archBtn.disabled = running;
+  archBtn.textContent = running ? '归档中…' : `归档选中项 (${fmt(archBytes)})`;
+  $('stopArchive').style.display = running ? '' : 'none';
+
   syncSelectButtons();
 }
 
@@ -692,6 +719,20 @@ async function poll() {
       + `${phase} · ${STATE.visited.toLocaleString()} 个目录`
       + (STATE.current ? ` · ${esc(STATE.current)}` : '') + `</span>`;
     await renderMap();
+  }
+
+  const mig = STATE.migrate;
+  if (mig) {
+    if (mig.status === 'running') {
+      $('migsum').textContent = `　· 归档中 ${mig.done}/${mig.total} · ${mig.bytes_text} / ${mig.need_text}`;
+    } else if (mig.status === 'done' && !window.__migDone) {
+      window.__migDone = true;
+      $('migsum').textContent = `　· ${mig.message}`;
+      const fail = (mig.failed || []).length;
+      toast((mig.message || '归档完成') + (fail ? `（${fail} 个失败，源文件都还在）` : '') + ' · 点「扫描」刷新', 9000);
+    } else if (mig.status === 'idle') {
+      $('migsum').textContent = '';
+    }
   }
 
   if (STATE.status === 'idle' && !window.__idleShown) {
@@ -791,43 +832,75 @@ window.addEventListener('blur', closeContextMenu);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeContextMenu(); });
 
 /* ---------------- 清理 ---------------- */
+// 清理只认 junk / review；归档项走「归档选中项」，混进来会被后端白名单拒绝
 function selectedRows() {
-  return (STATE?.opportunities || []).filter(r => SELECTED.has(r.id));
+  return (STATE?.opportunities || []).filter(
+    r => SELECTED.has(r.id) && r.category !== 'archive');
 }
 
-async function doClean(dryRun) {
+function selectedArchiveRows() {
+  return (STATE?.opportunities || []).filter(
+    r => SELECTED.has(r.id) && r.category === 'archive');
+}
+
+async function doClean() {
   const rows = selectedRows();
   if (!rows.length) return;
 
-  if (!dryRun) {
-    const total = rows.reduce((a,r)=>a+r.size,0);
-    const html = `<h3>确认清理 ${rows.length} 项？</h3>
-      <p>预计释放 <b style="color:var(--accent)">${fmt(total)}</b>。以下内容将被删除：</p>
-      <ul>${rows.map(r=>`<li><span>${esc(r.title)}</span><span>${esc(r.size_text)}</span></li>`).join('')}</ul>
-      <p style="color:#8b93a7">这些位置都在白名单里，删了会自动重建；受保护路径一律拒绝。</p>
-      <div class="actions"><button class="ghost" id="cx">取消</button>
-      <button class="primary" id="ok">确认清理</button></div>`;
-    $('card').innerHTML = html;
-    $('overlay').classList.add('on');
-    $('cx').onclick = () => $('overlay').classList.remove('on');
-    $('ok').onclick = () => { $('overlay').classList.remove('on'); runClean(false); };
-    return;
-  }
-  runClean(true);
+  const total = rows.reduce((a,r)=>a+r.size,0);
+  const html = `<h3>确认清理 ${rows.length} 项？</h3>
+    <p>预计释放 <b style="color:var(--accent)">${fmt(total)}</b>。以下内容将被删除：</p>
+    <ul>${rows.map(r=>`<li><span>${esc(r.title)}</span><span>${esc(r.size_text)}</span></li>`).join('')}</ul>
+    <p style="color:#8b93a7">这些位置都在白名单里，删了会自动重建；受保护路径一律拒绝。</p>
+    <div class="actions"><button class="ghost" id="cx">取消</button>
+    <button class="primary" id="ok">确认清理</button></div>`;
+  $('card').innerHTML = html;
+  $('overlay').classList.add('on');
+  $('cx').onclick = () => $('overlay').classList.remove('on');
+  $('ok').onclick = () => { $('overlay').classList.remove('on'); runClean(); };
 }
 
-async function runClean(dryRun) {
+async function doArchive() {
+  const rows = selectedArchiveRows();
+  if (!rows.length) { toast('先勾选要归档的项'); return; }
+  const total = rows.reduce((a, r) => a + r.size, 0);
+
+  let target = '';
+  try { target = await API.pick_folder(); } catch (e) { target = ''; }
+  if (!target) return;
+
+  const list = rows.map(r => `<li><span>${esc(r.title)}</span><span>${esc(r.size_text)}</span></li>`).join('');
+  const html = `<h3>把这 ${rows.length} 组文件搬到别处？</h3>
+    <p>目标目录：<b>${esc(target)}</b>　合计 <b style="color:var(--accent)">${fmt(total)}</b></p>
+    <ul>${list}</ul>
+    <p style="color:#8b93a7;font-size:12.5px;line-height:1.8">
+      每个文件<b>先复制、再校验大小和 SHA256、最后才删源</b>。
+      任何一步对不上，源文件原样保留，不会丢数据。目标里重名会自动加 (2)(3)，不覆盖已有文件。</p>
+    <div class="actions"><button class="ghost" id="cx">取消</button>
+    <button class="primary" id="ok">开始归档</button></div>`;
+  $('card').innerHTML = html;
+  $('overlay').classList.add('on');
+  $('cx').onclick = () => $('overlay').classList.remove('on');
+  $('ok').onclick = async () => {
+    $('overlay').classList.remove('on');
+    window.__migDone = false;
+    const res = await API.start_migrate(rows.map(r => r.id), target);
+    if (!res || !res.ok) { toast((res && res.error) || '启动归档失败'); return; }
+    toast(`开始归档 ${res.total} 个文件 → ${target}`, 6000);
+    poll();
+  };
+}
+
+async function runClean() {
   const ids = selectedRows().map(r => r.id);
-  $('run').disabled = true; $('dry').disabled = true;
-  // 演练要遍历上万个文件，可能十几秒；不给反馈用户会以为点空了
-  toast(dryRun ? '正在统计（dry-run，不会删除）…' : '正在清理…', 60000);
+  $('run').disabled = true;
+  // 删上万个文件可能要十几秒；不给反馈用户会以为点空了
+  toast('正在清理…', 60000);
   try {
-    const data = await API.clean(ids, dryRun);
+    const data = await API.clean(ids, false);
     if (!data.ok) { toast(data.message || '没有可执行项'); return; }
 
-    if (dryRun) {
-      toast(`演练：可释放 ${data.freed_text}（未删除任何文件）`);
-    } else {
+    {
       toast(`已释放 ${data.freed_text}`);
       const errs = (data.reports||[]).flatMap(x=>x.errors||[]);
       if (errs.length) {
@@ -844,7 +917,7 @@ async function runClean(dryRun) {
   } catch (e) {
     toast('清理请求失败：' + e.message);
   } finally {
-    $('run').disabled = false; $('dry').disabled = false;
+    $('run').disabled = false;
     updateSum();
   }
 }
@@ -912,8 +985,12 @@ $('stop').onclick = async () => {
   if (!result || !result.ok) toast('现在没有正在进行的扫描');
   poll();
 };
-$('dry').onclick = () => doClean(true);
-$('run').onclick = () => doClean(false);
+$('run').onclick = () => doClean();
+$('archiveItem').onclick = () => doArchive();
+$('stopArchive').onclick = async () => {
+  const r = await API.stop_migrate();
+  if (r && r.ok) toast('正在停止：当前这个文件搬完就停');
+};
 window.addEventListener('resize', () => { renderMap().catch(() => {}); });
 
 // 启动：native 模式等 pywebview 注入 api 之后再拉数据（早于它会拿到 undefined，

@@ -20,8 +20,10 @@ from typing import Any
 
 import webview
 
-from .analyze import Opportunity, build_opportunities, totals_by_category
+from .analyze import CATEGORY_ARCHIVE, Opportunity, build_opportunities, totals_by_category
 from .clean import clean_findings
+from .migrate import execute as migrate_execute
+from .migrate import free_space, human_size as migrate_size, plan as migrate_plan
 from .report import disk_info
 from .rules import detect_all
 from .scan import ScanResult, human_size, scan
@@ -73,6 +75,16 @@ class GuiState:
     error: str = ""
     stopping: bool = False        # 用户点了结束，worker 正在收尾
 
+    # 归档（把大文件搬到别的盘）是独立于扫描的第二条长任务
+    migrate_status: str = "idle"  # idle | running | done | error
+    migrate_total: int = 0
+    migrate_done: int = 0
+    migrate_bytes: int = 0
+    migrate_need: int = 0
+    migrate_current: str = ""
+    migrate_message: str = ""
+    migrate_failed: list = field(default_factory=list)
+
     result: ScanResult | None = None
     findings: list = field(default_factory=list)
     opportunities: list[Opportunity] = field(default_factory=list)
@@ -82,6 +94,8 @@ class GuiState:
     _thread: threading.Thread | None = field(default=None, repr=False)
     _paused: bool = field(default=False, repr=False)
     _stopped: bool = field(default=False, repr=False)
+    _migrate_stop: bool = field(default=False, repr=False)
+    _migrate_thread: threading.Thread | None = field(default=None, repr=False)
 
     # ---------------------------------------------------------------- 扫描
 
@@ -182,6 +196,98 @@ class GuiState:
                 self.stopping = False
                 self.error = f"{exc}\n{traceback.format_exc(limit=2)}"
 
+    # ---------------------------------------------------------------- 归档
+
+    def start_migrate(self, ids: list[str], target: str) -> dict[str, Any]:
+        """把选中的归档项（大文件）搬到 ``target`` 目录。
+
+        只搬 ``archive`` 分类的项；``junk`` / ``review`` 走清理，``manual`` 永远不动。
+        """
+        target_dir = os.path.abspath(target) if target else ""
+        if not target_dir or not os.path.isdir(target_dir):
+            return {"ok": False, "error": "目标目录不存在，先选一个别的盘上的文件夹"}
+
+        with self._lock:
+            if self.migrate_status == "running":
+                return {"ok": False, "error": "已经有一个归档任务在跑"}
+
+            wanted = set(ids or [])
+            paths = [
+                one_path
+                for row in self.opportunities
+                if row.id in wanted and row.category == CATEGORY_ARCHIVE
+                for one_path in row.paths
+            ]
+            if not paths:
+                return {"ok": False, "error": "选中的项里没有可归档的文件"}
+
+            items = migrate_plan(paths, target_dir)
+            if not items:
+                return {"ok": False, "error": "选中的文件都不在了，重新扫描一下"}
+
+            need = sum(item.size for item in items)
+            free = free_space(target_dir)
+            if need > free:
+                return {
+                    "ok": False,
+                    "error": f"目标盘空间不够：需要 {migrate_size(need)}，可用 {migrate_size(free)}",
+                }
+
+            self.migrate_status = "running"
+            self.migrate_total = len(items)
+            self.migrate_done = 0
+            self.migrate_bytes = 0
+            self.migrate_need = need
+            self.migrate_current = ""
+            self.migrate_message = ""
+            self.migrate_failed = []
+            self._migrate_stop = False
+
+        self._migrate_thread = threading.Thread(
+            target=self._migrate_worker, args=(items,), name="spacesift-migrate", daemon=True,
+        )
+        self._migrate_thread.start()
+        return {"ok": True, "total": len(items), "need": need, "target": target_dir}
+
+    def stop_migrate(self) -> dict[str, Any]:
+        with self._lock:
+            if self.migrate_status != "running":
+                return {"ok": False}
+            self._migrate_stop = True
+        return {"ok": True}
+
+    def _migrate_worker(self, items: list) -> None:
+        def on_progress(done: int, total: int, item) -> None:
+            with self._lock:
+                self.migrate_done = done
+                if item is not None:
+                    self.migrate_current = item.src
+
+        def on_bytes(written: int, _chunk: int) -> None:
+            with self._lock:
+                self.migrate_bytes = written
+
+        def should_stop() -> bool:
+            with self._lock:
+                return self._migrate_stop
+
+        try:
+            report = migrate_execute(
+                items, on_progress=on_progress, should_stop=should_stop, on_bytes=on_bytes,
+            )
+            with self._lock:
+                self.migrate_status = "done"
+                self.migrate_done = len(items)
+                self.migrate_bytes = report.moved_bytes
+                self.migrate_message = report.summary()
+                self.migrate_failed = report.failed[:20]
+                self.migrate_current = ""
+        except Exception as exc:  # noqa: BLE001 - 界面要显示原因
+            with self._lock:
+                self.migrate_status = "error"
+                self.migrate_message = str(exc)
+                self.migrate_current = ""
+
     # ---------------------------------------------------------------- 快照
 
     def snapshot(self) -> dict[str, Any]:
@@ -238,6 +344,18 @@ class GuiState:
                     }
                     for row in self.opportunities
                 ]
+                payload["migrate"] = {
+                    "status": self.migrate_status,
+                    "total": self.migrate_total,
+                    "done": self.migrate_done,
+                    "bytes": self.migrate_bytes,
+                    "bytes_text": migrate_size(self.migrate_bytes),
+                    "need": self.migrate_need,
+                    "need_text": migrate_size(self.migrate_need),
+                    "current": self.migrate_current,
+                    "message": self.migrate_message,
+                    "failed": self.migrate_failed[:5],
+                }
                 payload["totals"] = {
                     key: {"bytes": value, "text": human_size(value)}
                     for key, value in totals_by_category(self.opportunities).items()
@@ -344,6 +462,12 @@ class Api:
 
     def stop_scan(self) -> dict[str, Any]:
         return self.state.stop_scan()
+
+    def start_migrate(self, ids: list[str], target: str) -> dict[str, Any]:
+        return self.state.start_migrate(ids, target)
+
+    def stop_migrate(self) -> dict[str, Any]:
+        return self.state.stop_migrate()
 
     def get_children(self, path: str) -> dict[str, Any]:
         """返回某个目录的**直接**子目录（从已扫描结果里切片）。
