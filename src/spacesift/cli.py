@@ -224,7 +224,16 @@ def cmd_clean(args: argparse.Namespace) -> int:
 
 def cmd_gui(args: argparse.Namespace) -> int:
     """打开原生窗口界面。"""
-    from .gui import run
+    try:
+        from .gui import run
+    except ImportError:
+        print(
+            "打开窗口界面需要 pywebview：\n"
+            '  pip install "spacesift[gui]"\n'
+            "或者直接用发布页里的 SpaceSift.exe（自带运行时，不用装 Python）。",
+            file=sys.stderr,
+        )
+        return 1
 
     run(args.path, depth=args.depth)
     return 0

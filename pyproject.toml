@@ -24,6 +24,9 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-cov>=4"]
+# 原生窗口界面依赖。exe 发行版已经把 pywebview 打进去了，源码用户需要装：
+#   pip install "spacesift[gui]"
+gui = ["pywebview>=5.0"]
 
 [project.scripts]
 spacesift = "spacesift.cli:main"

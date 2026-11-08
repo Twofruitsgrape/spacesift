@@ -54,24 +54,20 @@
 
 ## 快速开始
 
-### 免安装（推荐先这样试）
+**Windows 用户最省事：** 去 [Releases](https://github.com/Twofruitsgrape/spacesift/releases) 下载
+`SpaceSift.exe`，双击就能用，不用装 Python。
+
+### 从源码跑
 
 ```bash
 git clone https://github.com/Twofruitsgrape/spacesift.git
 cd spacesift
-python -m spacesift          # 需要 PYTHONPATH=src 或先 pip install -e .
-```
-
-Windows 用户也可以直接双击 `运行.bat`。
-
-### 安装
-
-```bash
-pip install -e .            # 开发模式
-# 或者
-pip install .
+pip install ".[gui]"        # 只想要命令行就把 [gui] 去掉
 spacesift --version
 ```
+
+> `[gui]` 会装 pywebview（原生窗口用）。exe 发行版已经把运行时打进去了，
+> 所以下载 exe 的人不需要这一步。
 
 ---
 

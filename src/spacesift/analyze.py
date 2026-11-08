@@ -120,7 +120,7 @@ def _archive_opportunities(
             continue
         if any(part in {".local", ".config", ".cache"} for part in parts):
             continue
-        if exclude_prefixes and os.path.normcase(directory).startswith(exclude_prefixes):
+        if exclude_prefixes and _norm_case(directory).startswith(exclude_prefixes):
             continue
         groups.setdefault(directory, []).append(hit)
 
@@ -142,6 +142,16 @@ def _archive_opportunities(
     return rows[:limit]
 
 
+def _norm_case(path: str) -> str:
+    """比较用的规范化路径。
+
+    两边都过一遍 ``os.path.abspath``，而不是只处理其中一边：Linux 上
+    ``abspath("C:/Users/me")`` 会变成 ``/home/runner/.../C:/Users/me``，
+    只规范化一边就永远匹配不上（CI 上就是这么挂的）。
+    """
+    return os.path.normcase(os.path.abspath(path)).replace("\\", "/").rstrip("/")
+
+
 def build_opportunities(
     scan: ScanResult,
     findings: Iterable[Finding],
@@ -155,14 +165,12 @@ def build_opportunities(
 
     # 已经被「人工处理」规则覆盖的目录，不再出现在归档建议里，否则同一批
     # 字节会被算两次（下载文件夹 42 GB 既算 manual 又算 archive）。
-    covered = []
+    covered: list[str] = []
     for finding in findings:
-        if finding.rule.risk != CAUTION and finding.rule.risk != MANUAL:
+        if finding.rule.risk not in (CAUTION, MANUAL):
             continue
         for path in finding.paths:
-            prefix = os.path.normcase(os.path.abspath(path)).rstrip("\\/")
-            covered.append(prefix + os.sep)
-            covered.append(prefix)
+            covered.append(_norm_case(path))
 
     rows.extend(
         _archive_opportunities(
