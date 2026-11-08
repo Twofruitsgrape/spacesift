@@ -142,6 +142,11 @@ footer .sum b{color:var(--accent);font-size:15px;font-family:ui-monospace,Consol
 .ctxmenu .sep{height:1px;background:var(--line);margin:4px 6px}
 .ctxmenu .hint{padding:4px 12px 6px;color:#6e7681;font-size:11px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px}
+
+/* ---------- 右栏范围提示 ---------- */
+.scope{padding:9px 16px 7px;color:#6e7681;font-size:11.5px;letter-spacing:.02em;
+  border-bottom:1px solid var(--line);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.empty{padding:24px 16px}
 </style>
 </head>
 <body>
@@ -481,6 +486,7 @@ function renderBread() {
     CURRENT = el.dataset.p;
     await renderMap(); renderBread();
   });
+  renderList();   // 右栏跟着面包屑走：只显示当前目录内的清理项
 }
 
 const CAT_ORDER = ['junk','review','archive','manual'];
@@ -492,15 +498,43 @@ const CAT_HELP = {
   manual:'系统功能或你的个人文件，工具永远不动。'
 };
 
-function renderList() {
+/* 右栏只显示落在当前方块图目录内的清理项。
+   规则命中的是具体缓存目录，和左边下钻的路径天然可以对齐。 */
+function scopeKey(path) {
+  return normPath(path || '').replace(/\/+$/, '').toLowerCase();
+}
+
+function inScope(path, scope) {
+  const base = scopeKey(scope);
+  if (!base) return true;
+  const target = scopeKey(path);
+  return target === base || target.indexOf(base + '/') === 0;
+}
+
+function scopedRows() {
   const rows = STATE?.opportunities || [];
+  if (!CURRENT) return rows;
+  return rows.filter(r => (r.paths || []).some(p => inScope(p, CURRENT)));
+}
+
+function renderList() {
+  const all = STATE?.opportunities || [];
+  const rows = scopedRows();
   const list = $('list');
-  if (!rows.length) { list.innerHTML = '<div style="padding:20px 16px;color:var(--muted);font-size:13px">扫描完成后这里会出现推荐项。</div>'; return; }
+  if (!all.length) { list.innerHTML = '<div style="padding:20px 16px;color:var(--muted);font-size:13px">扫描完成后这里会出现推荐项。</div>'; return; }
+  if (!rows.length) {
+    list.innerHTML = `<div class="empty">
+      <div style="font-size:13px;color:var(--muted)">这个位置没有可清理项</div>
+      <div style="font-size:12px;color:#6e7681;margin-top:8px;line-height:1.7">
+        缓存和临时文件基本都在用户目录下。<br>点上面的面包屑退回上一层，或回到盘符看全部。
+      </div></div>`;
+    return;
+  }
 
   const groups = {};
   for (const r of rows) (groups[r.category] ||= []).push(r);
 
-  let html = '';
+  let html = `<div class="scope">范围 · ${esc(CURRENT || STATE?.root || '全部')}</div>`;
   for (const cat of CAT_ORDER) {
     const items = groups[cat]; if (!items || !items.length) continue;
     const total = items.reduce((a,i)=>a+i.size,0);
@@ -765,7 +799,8 @@ $('browse').onclick = async () => {
 };
 $('path').onkeydown = e => { if (e.key === 'Enter') $('rescan').click(); };
 $('selSafe').onclick = () => {
-  for (const r of STATE?.opportunities || []) if (r.category === 'junk' || r.category === 'review') SELECTED.add(r.id);
+  // 只勾当前范围里的，别在 C:\D 点「全选」把整个 C 盘的缓存都选上
+  for (const r of scopedRows()) if (r.category === 'junk' || r.category === 'review') SELECTED.add(r.id);
   renderList(); updateSum();
 };
 $('selNone').onclick = () => { SELECTED.clear(); renderList(); updateSum(); };
