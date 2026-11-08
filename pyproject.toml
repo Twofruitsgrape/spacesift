@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spacesift"
-version = "0.2.2"
+version = "0.2.3"
 description = "磁盘一键清理 / SpaceSift — cross-platform disk usage scanner and safe cleaner for Windows"
 readme = "README.md"
 requires-python = ">=3.9"

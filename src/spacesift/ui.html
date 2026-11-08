@@ -160,6 +160,22 @@ footer .sum b{color:var(--accent);font-size:15px;font-family:ui-monospace,Consol
   border-bottom:1px solid var(--line);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .empty{padding:24px 16px}
 
+/* 「还有几项太小看不见」的提示条 —— 面积按字节比例画，几百 KB 在 30 GB 旁边
+   连一个像素都占不到，不提示的话用户会以为文件没扫到 */
+.tiny-hint{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);
+  max-width:88%;background:rgba(28,34,46,.94);border:1px solid var(--line);
+  border-radius:20px;padding:7px 16px;font-size:12px;color:#9aa4b5;cursor:pointer;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;z-index:5}
+.tiny-hint:hover{color:var(--fg);border-color:#3d4a63}
+
+/* 完整文件列表（弹窗里用） */
+.filelist{max-height:46vh;overflow:auto;margin:10px 0;border-top:1px solid var(--line)}
+.fl-row{display:flex;justify-content:space-between;gap:14px;padding:6px 2px;
+  border-bottom:1px solid rgba(255,255,255,.05);font-size:12.5px}
+.fl-row.is-file .fl-name{color:#9aa4b5}
+.fl-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fl-size{color:var(--accent);white-space:nowrap;font-variant-numeric:tabular-nums}
+
 button.ghost:disabled{opacity:.4;cursor:not-allowed}
 </style>
 </head>
@@ -186,6 +202,7 @@ button.ghost:disabled{opacity:.4;cursor:not-allowed}
     <div class="bread" id="bread"></div>
     <div id="map">
       <div id="mapInner"></div>
+      <div class="tiny-hint" id="tinyHint" style="display:none"></div>
       <div class="scanning" id="scanning" style="display:none">
         <div class="spinner"></div>
         <p id="scanmsg">正在扫描…</p>
@@ -492,10 +509,12 @@ async function renderMap() {
   inner.querySelectorAll('.tile').forEach(el => existing.set(el.dataset.path, el));
 
   const keep = new Set();
+  const tiny = [];
   for (const t of out) {
     const info = byPath[t.key];
     if (!info) continue;
     keep.add(info.path);
+    if (t.w * t.h < 400) tiny.push(info);   // 小于 20×20 像素，名字根本铺不开
 
     let d = existing.get(info.path);
     if (!d) {
@@ -533,6 +552,34 @@ async function renderMap() {
   for (const [path, el] of existing) {
     if (!keep.has(path)) el.remove();
   }
+
+  // 面积是按字节比例算的：几十 GB 旁边放个几百 KB，连一个像素都占不到。
+  // 不提示的话用户会以为「文件没扫到」。
+  const hint = $('tinyHint');
+  if (!scanning && tiny.length) {
+    const sum = tiny.reduce((acc, item) => acc + item.size, 0);
+    hint.textContent = `另有 ${tiny.length} 项太小（合计 ${fmt(sum)}），方块图里显示不出来 · 点这里看全部`;
+    hint.style.display = '';
+    hint.onclick = () => showFullList(kids);
+  } else {
+    hint.style.display = 'none';
+  }
+}
+
+function showFullList(kids) {
+  const rows = kids.slice().sort((a, b) => b.size - a.size);
+  const total = rows.reduce((acc, item) => acc + item.size, 0);
+  const html = `<h3>${esc(CURRENT || '')} 下的全部 ${rows.length} 项</h3>
+    <p style="color:#8b93a7;font-size:12.5px">合计 ${fmt(total)}　按大小排序</p>
+    <div class="filelist">${rows.map(item => `
+      <div class="fl-row${item.isFile ? ' is-file' : ''}">
+        <span class="fl-name" title="${esc(item.path)}">${esc(item.name)}</span>
+        <span class="fl-size">${fmt(item.size)}</span>
+      </div>`).join('')}</div>
+    <div class="actions"><button class="primary" id="cx">关闭</button></div>`;
+  $('card').innerHTML = html;
+  $('overlay').classList.add('on');
+  $('cx').onclick = () => $('overlay').classList.remove('on');
 }
 
 function renderBread() {
