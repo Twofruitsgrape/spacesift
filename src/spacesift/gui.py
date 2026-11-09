@@ -301,14 +301,46 @@ class GuiState:
                 with self._lock:
                     self.partial = snapshot
 
-            result = scan(
-                self.root,
-                max_depth=self.depth,
-                top_files=80,
-                progress=on_progress,
-                partial=on_partial,
-                checkpoint=self._gate,
-            )
+            # 扫描顺手把文件名索引进 SQLite，省掉「扫完再遍历一遍建索引」
+            writer = None
+            db = self._index_db(self.root)
+            if not indexer.is_fresh(db, self.root):
+                try:
+                    writer = indexer.BulkWriter(db, self.root)
+                except OSError:
+                    writer = None
+
+            try:
+                result = scan(
+                    self.root,
+                    max_depth=self.depth,
+                    top_files=80,
+                    progress=on_progress,
+                    partial=on_partial,
+                    checkpoint=self._gate,
+                    file_sink=writer,
+                )
+            except Exception:
+                if writer is not None:
+                    writer.abort()
+                raise
+
+            if writer is not None:
+                try:
+                    written = writer.finish(partial=result.interrupted)
+                    with self._lock:
+                        self.index_status = "ready"
+                        self.index_root = self.root
+                        self.index_files = written
+                        self.index_message = (
+                            f"索引已随扫描建好 · {written:,} 项"
+                            if not result.interrupted else "索引只建了一部分，下次会重来"
+                        )
+                except Exception as exc:  # noqa: BLE001 - 索引失败不该让扫描白跑
+                    writer.abort()
+                    with self._lock:
+                        self.index_status = "error"
+                        self.index_message = f"索引失败：{exc}"
             findings = detect_all()
             opportunities = build_opportunities(result, findings)
             with self._lock:
@@ -538,9 +570,13 @@ class GuiState:
                     "interrupted": result.interrupted,
                     # 只带浅层的一份做兜底（浏览器版用它离线渲染）；
                     # 原生窗口下钻走 get_children，不需要整棵树。
+                    # 只带 2 层：这份数据每次轮询都要序列化一遍，C 盘 depth=6 时
+                    # 有 9.8 万个目录，带上 3 层就是近 2 万条、1.9 MB JSON，
+                    # 每 1.5 秒造一次足够让空闲时的 CPU 一直挂在 8%。
+                    # 深层下钻走 get_children 按需取，不需要全量常驻。
                     "tree": {
                         path: size for path, size in result.dirs.items()
-                        if path.count(os.sep) <= result.root.count(os.sep) + 3
+                        if path.count(os.sep) <= result.root.count(os.sep) + 2
                     },
                     "top_files": [
                         {"path": hit.path, "size": hit.size, "text": human_size(hit.size)}

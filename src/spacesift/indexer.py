@@ -75,6 +75,8 @@ def is_fresh(db_path: str, root: str, max_age_hours: float = 12) -> bool:
     expected = ",".join(sorted({name.lower() for name in SKIP_DIRS}))
     if meta.get("skip_sig", "") != expected:
         return False        # 跳过规则改过，旧库的内容不完整，重扫
+    if meta.get("partial", "0") == "1":
+        return False        # 上次是扫到一半结束的，重扫一遍更靠谱
     try:
         built = float(meta.get("built_at", "0"))
     except ValueError:
@@ -217,6 +219,71 @@ def build(
             "索引库正被另一个 SpaceSift 窗口占用，先关掉它再重建"
         ) from exc
     return report
+
+
+class BulkWriter:
+    """边扫边写索引。
+
+    ``scan()`` 每攒够一批就调一次 ``__call__``，最后 ``finish()`` 提交并换名。
+    这样「扫描」和「建索引」共用同一次遍历 —— 之前是两遍全盘，慢一倍。
+    """
+
+    def __init__(self, db_path: str, root: str) -> None:
+        self.db_path = db_path
+        self.root = os.path.abspath(root)
+        self.tmp_path = db_path + ".building"
+        self.rows = 0
+        os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
+        for leftover in (self.tmp_path, self.tmp_path + "-journal", self.tmp_path + "-wal"):
+            if os.path.exists(leftover):
+                try:
+                    os.remove(leftover)
+                except OSError:
+                    pass
+        self.conn = sqlite3.connect(self.tmp_path)
+        self.conn.executescript(SCHEMA)
+
+    def __call__(self, batch: list) -> None:
+        if not batch:
+            return
+        prepared = [
+            (path, name, name.lower(), size, is_dir)
+            for path, name, size, is_dir in batch
+        ]
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO files(path,name,lower,size,is_dir) VALUES(?,?,?,?,?)",
+            prepared,
+        )
+        self.rows += len(prepared)
+
+    def finish(self, partial: bool = False) -> int:
+        skip = ",".join(sorted({name.lower() for name in SKIP_DIRS}))
+        self.conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('root',?)", (self.root,))
+        self.conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('built_at',?)",
+                          (str(time.time()),))
+        self.conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('files',?)",
+                          (str(self.rows),))
+        self.conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('skip_sig',?)", (skip,))
+        # 中途结束的索引：能搜，但下次会重建（否则半份结果被长期当成完整的用）
+        self.conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('partial',?)",
+                          ("1" if partial else "0",))
+        self.conn.commit()
+        self.conn.close()
+        try:
+            os.replace(self.tmp_path, self.db_path)
+        except PermissionError as exc:
+            raise RuntimeError("索引库正被另一个 SpaceSift 窗口占用，先关掉它再重建") from exc
+        return self.rows
+
+    def abort(self) -> None:
+        try:
+            self.conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            os.remove(self.tmp_path)
+        except OSError:
+            pass
 
 
 @dataclass

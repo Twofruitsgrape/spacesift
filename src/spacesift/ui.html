@@ -1150,7 +1150,10 @@ async function poll() {
     }
   }
 
-  pollTimer = setTimeout(poll, scanning ? 350 : (paused ? 800 : 1500));
+  // 空闲时不用 1.5 秒一次：扫描/建索引/归档进行中才需要高频刷新
+  const busy = scanning || paused || STATE.migrate?.status === 'running'
+    || STATE.index?.status === 'building';
+  pollTimer = setTimeout(poll, busy ? (scanning ? 350 : 700) : 2600);
 }
 
 function toast(msg, ms) {

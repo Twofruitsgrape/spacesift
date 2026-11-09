@@ -108,6 +108,8 @@ def scan(
     partial_every: int = 4000,
     checkpoint: Callable[[], bool] | None = None,
     checkpoint_every: int = 192,
+    file_sink: Callable[[list], None] | None = None,
+    sink_every: int = 4000,
 ) -> ScanResult:
     """扫描 ``root`` 并返回聚合结果。
 
@@ -128,6 +130,10 @@ def scan(
     partial:
         扫描过程中的增量快照回调，参数是 ``{一级子目录: 已扫到的字节数}``。
         界面用它把方块边扫边画出来（SpaceSniffer 那种生长感），数值只会变大。
+    file_sink:
+        每攒够 ``sink_every`` 条 ``(path, name, size, is_dir)`` 就回调一次。
+        界面拿它**顺手把索引写了** —— 否则「扫描一遍 + 搜索再遍历一遍」等于
+        把整个盘走两次，用户会觉得「都扫完了怎么搜还慢」。
     checkpoint:
         每 ``checkpoint_every`` 个目录调用一次，返回 ``False`` 表示用户要求结束。
         点结束不是抛异常，而是**收尾返回已扫到的部分结果**（``interrupted=True``），
@@ -169,6 +175,12 @@ def scan(
     errors = 0
     visited = 0
     stack: list[str] = [root]
+    sink_buffer: list[tuple[str, str, int, int]] = []
+
+    def _flush_sink() -> None:
+        if file_sink is not None and sink_buffer:
+            file_sink(list(sink_buffer))
+            sink_buffer.clear()
 
     interrupted = False
     while stack:
@@ -211,6 +223,10 @@ def scan(
                         depth[path] = depth[current] + 1
                         direct[path] = 0
                         stack.append(path)
+                        if file_sink is not None:
+                            sink_buffer.append((path, entry.name, 0, 1))
+                            if len(sink_buffer) >= sink_every:
+                                _flush_sink()
                     elif entry.is_file(follow_symlinks=False):
                         size = entry.stat(follow_symlinks=False).st_size
                         direct[current] = direct.get(current, 0) + size
@@ -219,8 +235,14 @@ def scan(
                         if partial is not None and depth[current] >= 1:
                             key = _top_of(current)
                             top_totals[key] = top_totals.get(key, 0) + size
+                        if file_sink is not None:
+                            sink_buffer.append((entry.path, entry.name, size, 0))
+                            if len(sink_buffer) >= sink_every:
+                                _flush_sink()
                 except OSError:
                     errors += 1
+
+    _flush_sink()
 
     # 后序累加：按深度从深到浅，把每个目录的完整大小加到父目录。
     sizes = dict(direct)
