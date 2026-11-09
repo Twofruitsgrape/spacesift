@@ -16,7 +16,9 @@ def _seed(root) -> None:
     (data / "docs" / "报关单.pdf").write_bytes(b"x" * 200)
     (data / "media" / "video.mp4").write_bytes(b"x" * 300)
     (data / "node_modules").mkdir()
-    (data / "node_modules" / "skipme.js").write_bytes(b"x" * 10)
+    (data / "node_modules" / "kept.js").write_bytes(b"x" * 10)
+    (data / "$RECYCLE.BIN").mkdir()
+    (data / "$RECYCLE.BIN" / "junk.bin").write_bytes(b"x" * 10)
 
 
 def _target(root):
@@ -29,8 +31,8 @@ def test_build_and_search(tmp_path):
 
     report = indexer.build(_target(tmp_path), db)
 
-    assert report.files == 3, "node_modules 应该被跳过"
-    assert report.dirs == 2
+    assert report.files == 4, "node_modules 里的文件也要索引（用户要能搜到）"
+    assert report.dirs == 3
 
     hits = indexer.search(db, "xlsx")
     assert len(hits) == 1
@@ -66,12 +68,14 @@ def test_chinese_name_search(tmp_path):
     assert indexer.search(db, "单.pdf")
 
 
-def test_skip_directories_are_ignored(tmp_path):
+def test_only_recycle_bin_is_skipped(tmp_path):
+    """只跳回收站和系统还原点；node_modules 这类要能搜到。"""
     _seed(tmp_path)
     db = str(tmp_path / "index.db")
     indexer.build(_target(tmp_path), db)
 
-    assert indexer.search(db, "skipme") == []
+    assert indexer.search(db, "junk.bin") == [], "回收站里的不索引"
+    assert indexer.search(db, "kept.js"), "node_modules 里的必须能搜到"
 
 
 def test_freshness_depends_on_root_and_age(tmp_path):

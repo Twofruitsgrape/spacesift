@@ -18,11 +18,13 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
-# 这些目录里的东西搜出来也没意义，还特别慢（系统还原点、容器层）
-SKIP_DIRS = {
-    "$RECYCLE.BIN", "System Volume Information", "$Recycle.Bin",
-    "Windows", "WinSxS", "ProgramData", "node_modules", ".git",
-}
+# 只跳过真正的垃圾区：回收站和系统还原点。里面的文件既搜不出意义，
+# 又可能占几十 GB。
+#
+# 早期版本还跳过了 Windows / WinSxS / node_modules / .git —— 实测在 D 盘上
+# 因此少索引了 36,003 个文件（186,967 -> 150,964）。用户要的是「搜得到所有文件」，
+# 那个取舍站不住脚，已经放开。
+SKIP_DIRS = {"$RECYCLE.BIN", "System Volume Information"}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -66,10 +68,13 @@ def read_meta(db_path: str) -> dict[str, str]:
 
 
 def is_fresh(db_path: str, root: str, max_age_hours: float = 12) -> bool:
-    """库里记录的是同一个 root 且不太旧，就当它还能用。"""
+    """库里记录的是同一个 root、同一套跳过规则、且不太旧，就当它还能用。"""
     meta = read_meta(db_path)
     if meta.get("root", "").lower() != os.path.normcase(os.path.abspath(root)).lower():
         return False
+    expected = ",".join(sorted({name.lower() for name in SKIP_DIRS}))
+    if meta.get("skip_sig", "") != expected:
+        return False        # 跳过规则改过，旧库的内容不完整，重扫
     try:
         built = float(meta.get("built_at", "0"))
     except ValueError:
@@ -190,6 +195,8 @@ def build(
         conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('root',?)", (root,))
         conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('built_at',?)", (str(time.time()),))
         conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('files',?)", (str(report.files),))
+        conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('skip_sig',?)",
+                     (",".join(sorted(skip)),))
         conn.commit()
     finally:
         conn.close()
@@ -202,7 +209,13 @@ def build(
                 os.remove(db_path)
         except OSError:
             pass
-    os.replace(tmp_path, db_path)
+    try:
+        os.replace(tmp_path, db_path)
+    except PermissionError as exc:
+        # 另一个 SpaceSift 窗口正在读这个库，Windows 不允许替换
+        raise RuntimeError(
+            "索引库正被另一个 SpaceSift 窗口占用，先关掉它再重建"
+        ) from exc
     return report
 
 

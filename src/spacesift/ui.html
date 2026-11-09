@@ -253,6 +253,7 @@ button.primary.danger:hover{background:#9c3a3f}
       <div class="mode-tabs">
         <button class="tab on" data-mode="recommend" title="只看值得处理的：缓存、可清理项、归档建议">推荐清理</button>
         <button class="tab" data-mode="deep" title="把当前目录里的每一项都列出来，不做任何筛选">深度清理</button>
+        <button class="tab" data-mode="search" title="搜索命中的文件，可勾选后移入回收站">检索结果</button>
       </div>
       <div style="display:flex;gap:8px">
         <button class="ghost" id="selSafe" title="全选可直接清理的项">全选安全项</button>
@@ -682,20 +683,32 @@ const CAT_HELP = {
 };
 
 /* ---------------- 搜索 ---------------- */
-let SEARCH_MODE = false;
+let SEARCH_QUERY = '';
+let SEARCH_TOTAL = 0;
 let SEARCH_RESULTS = [];
+let PREV_MODE = 'recommend';
+
+function setMode(mode) {
+  MODE = mode;
+  document.querySelectorAll('.mode-tabs .tab')
+    .forEach(btn => btn.classList.toggle('on', btn.dataset.mode === mode));
+  renderList();
+}
 
 async function runSearch(queryText) {
   const query = (queryText || '').trim();
   const list = $('list');
   if (!query) {
-    SEARCH_MODE = false;
     SEARCH_RESULTS = [];
-    renderList();
+    SEARCH_QUERY = '';
+    setMode(PREV_MODE === 'search' ? 'recommend' : PREV_MODE);
     return;
   }
 
-  SEARCH_MODE = true;
+  if (MODE !== 'search') PREV_MODE = MODE;
+  MODE = 'search';
+  document.querySelectorAll('.mode-tabs .tab')
+    .forEach(btn => btn.classList.toggle('on', btn.dataset.mode === 'search'));
   list.innerHTML = '<div style="padding:16px;color:var(--muted);font-size:13px">搜索中…</div>';
 
   let res = null;
@@ -708,7 +721,6 @@ async function runSearch(queryText) {
   if (!res) { list.innerHTML = ''; return; }
 
   if (res.indexing || res.message) {
-    SEARCH_MODE = false;   // 还在建索引，先不接管右栏
     list.innerHTML = `<div class="empty">
       <div style="font-size:13px;color:var(--muted)">${esc(res.message || '正在建立索引…')}</div>
       <div style="font-size:12px;color:#6e7681;margin-top:8px;line-height:1.7">
@@ -718,13 +730,16 @@ async function runSearch(queryText) {
   }
 
   SEARCH_RESULTS = res.hits || [];
-  renderSearchResults(query, res.total || 0);
+  SEARCH_QUERY = query;
+  SEARCH_TOTAL = res.total || 0;
+  renderList();
 }
 
 function renderSearchResults(query, total) {
   const list = $('list');
   if (!SEARCH_RESULTS.length) {
     list.innerHTML = `<div class="scope">搜索 · ${esc(query)}　没有匹配的文件</div>`;
+    updateSum();
     return;
   }
 
@@ -735,15 +750,29 @@ function renderSearchResults(query, total) {
 
   for (const item of SEARCH_RESULTS) {
     const kind = item.is_dir ? 'dir' : 'is-file';
+    const checked = DEEP_SELECTED.has(item.path) ? ' checked' : '';
     out += `<div class="deep-row ${kind}" data-path="${esc(item.path)}">
+      <input type="checkbox" data-deep="${esc(item.path)}"${checked}>
       <span class="dr-name" title="${esc(item.path)}">${esc(item.path)}</span>
       <span class="dr-size">${esc(item.text)}</span></div>`;
   }
   list.innerHTML = out;
+  updateSum();
 
   list.querySelectorAll('.deep-row').forEach(el => {
     const item = SEARCH_RESULTS.find(row => row.path === el.dataset.path);
     if (!item) return;
+
+    const box = el.querySelector('input[type=checkbox]');
+    if (box) {
+      box.onclick = (event) => {
+        event.stopPropagation();
+        if (box.checked) DEEP_SELECTED.set(item.path, { size: item.size, name: item.name });
+        else DEEP_SELECTED.delete(item.path);
+        updateSum();
+      };
+    }
+
     el.oncontextmenu = (event) => openContextMenu(event, {
       path: item.path, name: item.name, size: item.size, isFile: !item.is_dir,
     });
@@ -772,12 +801,12 @@ async function loadDeepView(path) {
    根本看不见，用户会以为没扫到。这个模式就是兜这个底。 */
 // 深度模式是「看清单」，跟勾选清理无关 —— 相关的按钮要收起来，别误导用户
 function syncModeChrome() {
-  const deep = MODE === 'deep';
-  // 「全选安全项」只对推荐模式有意义（深度模式里什么都可能被勾上）
-  $('selSafe').style.display = deep ? 'none' : '';
-  $('run').style.display = deep ? 'none' : '';
-  $('deepDelete').style.display = deep ? '' : 'none';
-  if (deep) $('archiveItem').style.display = 'none';
+  // 深度模式和检索结果都是「用户自己挑文件」，共用同一个勾选集合和回收站按钮
+  const picky = MODE === 'deep' || MODE === 'search';
+  $('selSafe').style.display = picky ? 'none' : '';
+  $('run').style.display = picky ? 'none' : '';
+  $('deepDelete').style.display = picky ? '' : 'none';
+  if (picky) $('archiveItem').style.display = 'none';
   const foot = document.querySelector('footer');
   if (foot) foot.style.display = '';
 }
@@ -881,8 +910,17 @@ function scopedRows() {
 }
 
 function renderList() {
-  if (SEARCH_MODE) return;      // 搜索结果显示中，别被模式切换覆盖
   syncModeChrome();
+  if (MODE === 'search') {
+    if (!SEARCH_QUERY) {
+      $('list').innerHTML = '<div style="padding:20px 16px;color:var(--muted);font-size:13px">'
+        + '在上面搜索框里输入文件名，结果会显示在这里。</div>';
+      updateSum();
+      return;
+    }
+    renderSearchResults(SEARCH_QUERY, SEARCH_TOTAL);
+    return;
+  }
   if (MODE === 'deep') {
     renderDeepList().catch(() => {});
     return;
@@ -968,7 +1006,7 @@ function syncSelectButtons() {
 }
 
 function updateSum() {
-  if (MODE === 'deep') {
+  if (MODE === 'deep' || MODE === 'search') {
     let bytes = 0;
     for (const info of DEEP_SELECTED.values()) bytes += info.size;
     $('sum').textContent = fmt(bytes);
@@ -1274,7 +1312,11 @@ async function doDeepDelete() {
     DEEP_SELECTED.clear();
     for (const key of Object.keys(DEEP_CACHE)) delete DEEP_CACHE[key];
     toast(res.message || '已移入回收站', 6000);
-    renderList();
+    if (MODE === 'search' && SEARCH_QUERY) {
+      runSearch(SEARCH_QUERY).catch(() => {});
+    } else {
+      renderList();
+    }
   };
 }
 
@@ -1389,10 +1431,14 @@ $('search').onkeydown = (event) => {
 
 document.querySelectorAll('.mode-tabs .tab').forEach(btn => {
   btn.onclick = () => {
-    MODE = btn.dataset.mode;
-    document.querySelectorAll('.mode-tabs .tab')
-      .forEach(other => other.classList.toggle('on', other === btn));
-    renderList();
+    const target = btn.dataset.mode;
+    if (target === 'search' && !SEARCH_QUERY) {
+      $('search').focus();
+      toast('在上面的搜索框输入文件名，结果会留在这个页签里');
+      return;
+    }
+    if (target !== 'search') PREV_MODE = target;
+    setMode(target);
   };
 });
 
